@@ -1,0 +1,44 @@
+{
+ "string": [
+  {
+   "name": "app_name",
+   "value": "v2rayNG"
+  },
+  {
+   "name": "app_name_en",
+   "value": "v2rayNG"
+  },
+  {
+   "name": "entry_ability_desc",
+   "value": "v2rayNG 主界面"
+  },
+  {
+   "name": "entry_ability_label",
+   "value": "v2rayNG"
+  },
+  {
+   "name": "vpn_extension_desc",
+   "value": "v2rayNG VPN 隧道扩展"
+  },
+  {
+   "name": "entry_desc",
+   "value": "v2rayNG · Xray 内核的鸿蒙原生客户端（移植自 Android v2rayNG 2.3.13）"
+  },
+  {
+   "name": "perm_internet_reason",
+   "value": "用于连接代理服务器与更新订阅"
+  },
+  {
+   "name": "perm_network_reason",
+   "value": "用于检测网络状态变化"
+  },
+  {
+   "name": "perm_bg_reason",
+   "value": "用于保持代理连接稳定运行"
+  },
+  {
+   "name": "perm_pasteboard_reason",
+   "value": "用于从剪贴板导入节点链接与导出备份/日志"
+  }
+ ]
+}

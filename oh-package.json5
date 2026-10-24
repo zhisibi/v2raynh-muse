@@ -1,0 +1,10 @@
+{
+  "modelVersion": "5.1.0",
+  "dependencies": {},
+  "description": "v2rayNG HarmonyOS NEXT 移植版（Xray 内核）",
+  "devDependencies": {},
+  "license": "GPL-3.0",
+  "name": "v2rayng",
+  "private": true,
+  "version": "1.0.0"
+}

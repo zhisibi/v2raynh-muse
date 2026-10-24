@@ -1,0 +1,12 @@
+build/
+.hvigor/
+oh_modules/
+*/build/
+local.properties
+entry/libs/arm64-v8a/*.so
+.ohos-core-build/
+*.hap
+.DS_Store
+
+entry/.cxx/
+.cxx/

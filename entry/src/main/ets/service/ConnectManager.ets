@@ -1,0 +1,125 @@
+// v2rayNG Harmony · 连接编排：生成 Xray 配置 -> 写文件 -> 拉起 VPN 扩展 -> 轮询状态
+import { fileIo as fs } from '@kit.CoreFileKit';
+import { ServerStore } from '../model/ServerStore';
+import { SettingsStore } from '../model/SettingsStore';
+import { buildXrayConfig, CONFIG_FILE_NAME } from '../model/XrayConfig';
+import { LogStore } from '../model/LogStore';
+import { VpnService } from './VpnService';
+
+const STATUS_FILE = 'vpn_status.json';
+
+export interface VpnStatus {
+  state: string;
+  error: string;
+  step: string;
+}
+
+interface FilesDirHolder {
+  filesDir: string;
+}
+
+function filesDir(): string {
+  const g: Record<string, Object> = globalThis as Object as Record<string, Object>;
+  const ctx: Object | undefined = g['v2rayngAppContext'];
+  if (ctx === undefined) return '';
+  return (ctx as FilesDirHolder).filesDir;
+}
+
+export function writeTextFile(path: string, text: string): void {
+  let file: fs.File | null = null;
+  try {
+    file = fs.openSync(path, fs.OpenMode.READ_WRITE | fs.OpenMode.CREATE | fs.OpenMode.TRUNC);
+    fs.writeSync(file.fd, text);
+  } finally {
+    if (file !== null) fs.closeSync(file);
+  }
+}
+
+function readStatus(): VpnStatus {
+  try {
+    const raw: string = fs.readTextSync(filesDir() + '/' + STATUS_FILE, { encoding: 'utf-8' });
+    const parsed: VpnStatus = JSON.parse(raw) as VpnStatus;
+    return parsed;
+  } catch (e) {
+    const unknown: VpnStatus = { state: 'unknown', error: '', step: '' };
+    return unknown;
+  }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve: () => void) => setTimeout(() => resolve(), ms));
+}
+
+export class ConnectManager {
+  static async connect(): Promise<string> {
+    const selected = ServerStore.getSelected();
+    if (selected === undefined) {
+      if (ServerStore.count() === 0) {
+        return '还没有节点：先去「节点」页导入/添加，或去「订阅」页添加订阅';
+      }
+      return '请先在「节点」页选择一个节点';
+    }
+    const settings = SettingsStore.get();
+    const configJson: string = buildXrayConfig(selected.profile, settings);
+    try {
+      writeTextFile(filesDir() + '/' + CONFIG_FILE_NAME, configJson);
+    } catch (e) {
+      return '写入配置文件失败';
+    }
+    LogStore.push('连接', '正在连接 ' + selected.profile.remarks + '（' + selected.profile.configType + '）模式=' +
+      (settings.tunEnabled ? 'TUN' : '仅代理'));
+    try {
+      fs.unlinkSync(filesDir() + '/' + STATUS_FILE);
+    } catch (e) {
+      // 不存在则忽略
+    }
+    try {
+      fs.unlinkSync(filesDir() + '/vpn_diag.txt');
+    } catch (e) {
+      // 不存在则忽略
+    }
+    try {
+      await VpnService.connect(settings.tunEnabled);
+    } catch (e) {
+      return '拉起 VPN 扩展失败: ' + (e instanceof Error ? e.message : String(e));
+    }
+    // 等待扩展就绪（最长 12 秒：首次含系统 VPN 授权弹窗时间偏紧，真机若超时看 step 定位）
+    for (let i = 0; i < 24; i++) {
+      await sleep(500);
+      const st: VpnStatus = readStatus();
+      if (st.state === 'running') {
+        LogStore.push('连接', '已连接');
+        return '';
+      }
+      if (st.state === 'error') {
+        LogStore.push('连接', '连接失败(step=' + st.step + '): ' + st.error);
+        return st.error || '内核启动失败';
+      }
+    }
+    const last: VpnStatus = readStatus();
+    return '连接超时：扩展未在 12 秒内就绪（最后状态 ' + last.state + '，step=' +
+      (last.step.length > 0 ? last.step : '无') + (last.error.length > 0 ? '，' + last.error : '') + '）';
+  }
+
+  static disconnect(): void {
+    VpnService.disconnect();
+    LogStore.push('连接', '已断开');
+  }
+
+  static status(): 'running' | 'starting' | 'stopped' | 'error' | 'unknown' {
+    const st: VpnStatus = readStatus();
+    if (st.state === 'running') return 'running';
+    if (st.state === 'starting') return 'starting';
+    if (st.state === 'error') return 'error';
+    if (st.state === 'stopped') return 'stopped';
+    return 'unknown';
+  }
+
+  static lastError(): string {
+    return readStatus().error;
+  }
+
+  static lastStep(): string {
+    return readStatus().step;
+  }
+}

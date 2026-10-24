@@ -1,0 +1,76 @@
+{
+  "module": {
+    "abilities": [
+      {
+        "backgroundModes": [
+          "dataTransfer"
+        ],
+        "description": "$string:entry_ability_desc",
+        "exported": true,
+        "icon": "$media:icon",
+        "label": "$string:entry_ability_label",
+        "name": "EntryAbility",
+        "skills": [
+          {
+            "actions": [
+              "action.system.home"
+            ],
+            "entities": [
+              "entity.system.home"
+            ]
+          }
+        ],
+        "srcEntry": "./ets/entryability/EntryAbility.ets",
+        "startWindowBackground": "$color:bg_primary",
+        "startWindowIcon": "$media:icon"
+      }
+    ],
+    "deliveryWithInstall": true,
+    "description": "$string:entry_desc",
+    "deviceTypes": [
+      "phone",
+      "tablet"
+    ],
+    "extensionAbilities": [
+      {
+        "description": "$string:vpn_extension_desc",
+        "exported": false,
+        "icon": "$media:icon",
+        "label": "$string:app_name",
+        "name": "V2RayVpnExtension",
+        "srcEntry": "./ets/vpnextension/V2RayVpnExtension.ets",
+        "type": "vpn"
+      }
+    ],
+    "installationFree": false,
+    "mainElement": "EntryAbility",
+    "name": "entry",
+    "requestPermissions": [
+      {
+        "name": "ohos.permission.INTERNET",
+        "reason": "$string:perm_internet_reason"
+      },
+      {
+        "name": "ohos.permission.GET_NETWORK_INFO",
+        "reason": "$string:perm_network_reason"
+      },
+      {
+        "name": "ohos.permission.KEEP_BACKGROUND_RUNNING",
+        "reason": "$string:perm_bg_reason"
+      },
+      {
+        "name": "ohos.permission.READ_PASTEBOARD",
+        "reason": "$string:perm_pasteboard_reason",
+        "usedScene": {
+          "abilities": [
+            "EntryAbility"
+          ],
+          "when": "inuse"
+        }
+      }
+    ],
+    "type": "entry",
+    "virtualMachine": "ark",
+    "pages": "$profile:main_pages"
+  }
+}

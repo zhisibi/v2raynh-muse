@@ -1,0 +1,24 @@
+{
+ "color": [
+  {
+   "name": "brand",
+   "value": "#FF1976D2"
+  },
+  {
+   "name": "bg_primary",
+   "value": "#FFFFFFFF"
+  },
+  {
+   "name": "bg_card",
+   "value": "#FFF5F7FA"
+  },
+  {
+   "name": "text_primary",
+   "value": "#FF12242C"
+  },
+  {
+   "name": "text_secondary",
+   "value": "#FF5B6D74"
+  }
+ ]
+}

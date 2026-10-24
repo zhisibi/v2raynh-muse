@@ -1,0 +1,155 @@
+# v2rayNG Harmony — GitHub Actions 自动打包 HAP
+#
+# 触发：push 到 main / PR / 手动触发。
+# 产物：未签名 HAP（Actions Artifacts，可下载）。未签名 HAP 不能直接安装，
+#       需在 DevEco Studio 里做一次自动签名（见 docs/CI.md），或后续接入签名 Secrets。
+#
+# 工作流默认不编译 Go 核心：entry/libs/arm64-v8a/libxray.so 需要已提交到仓库
+# （在有 DevEco 的机器上跑 scripts/build-ohos-core.sh 生成一次即可）。
+# 若想在 CI 内编译核心：Actions → 打包 HAP → Run workflow → 勾选 build_core（约 30-60 分钟）。
+# 注意：本仓库 v1 允许无 libxray.so 打包（UI 降级模式），下方核心检查为警告不拦截。
+
+name: 打包 HAP
+
+on:
+  push:
+    branches: [ "main" ]
+    paths-ignore:
+      - 'docs/**'
+      - '**.md'
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+    inputs:
+      build_core:
+        description: '同时在 CI 内编译 Go 核心 libxray.so（慢，约 30-60 分钟）'
+        type: boolean
+        default: false
+
+env:
+  # 华为云镜像上的鸿蒙命令行工具（含 hvigor/ohpm/Node/完整 5.1.0 SDK）
+  CLT_URL: https://repo.huaweicloud.com/harmonyos/ohpm/5.1.0/commandline-tools-linux-x64-5.1.0.840.zip
+
+jobs:
+  build-hap:
+    name: 构建 HAP（release，未签名）
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: 拉取源码
+        uses: actions/checkout@v4
+
+      - name: 安装 JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: 回收磁盘空间
+        run: |
+          set -euo pipefail
+          sudo rm -rf /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/lib/android 2>/dev/null || true
+          echo "可用空间：$(df -h / | awk 'NR==2 {print $4}')"
+
+      - name: 恢复工具链缓存
+        id: cache-clt
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/ohos-clt.zip
+          key: ohos-clt-5.1.0.840-${{ runner.os }}
+
+      - name: 下载命令行工具（含完整 SDK）
+        if: steps.cache-clt.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          zip="${{ runner.temp }}/ohos-clt.zip"
+          curl --fail --location --show-error --retry 5 --retry-all-errors \
+            --continue-at - -o "$zip" "$CLT_URL"
+          # 官方发布的 sha256 校验
+          expected="$(curl --fail --location --silent --show-error --retry 3 "$CLT_URL.sha256" | tr -d '[:space:]')"
+          echo "$expected  $zip" | sha256sum -c -
+          echo "工具链校验通过：$expected"
+
+      - name: 解压工具链并配置环境
+        run: |
+          set -euo pipefail
+          tools_root="$RUNNER_TEMP/ohos-clt"
+          rm -rf "$tools_root"; mkdir -p "$tools_root"
+          unzip -q "${{ runner.temp }}/ohos-clt.zip" -d "$tools_root"
+          tool_home="$(find "$tools_root" -maxdepth 1 -mindepth 1 -type d -name 'command-line-tools' -print -quit)"
+          if [[ -z "$tool_home" ]]; then
+            echo "::error::工具链解压后找不到 command-line-tools 目录"
+            find "$tools_root" -maxdepth 2 | head -20
+            exit 1
+          fi
+          chmod -R u+rwX "$tool_home"
+          find "$tool_home" -type f \
+            \( -path '*/bin/*' -o -path '*/toolchains/*' \
+               -o -path '*/native/llvm/bin/*' -o -path '*/native/build-tools/*' \) \
+            -exec chmod +x {} \;
+          # 关键环境变量
+          echo "TOOL_HOME=$tool_home" >> "$GITHUB_ENV"
+          echo "DEVECO_SDK_HOME=$tool_home/sdk" >> "$GITHUB_ENV"
+          echo "OHOS_NDK_HOME=$tool_home/sdk/default/openharmony/native" >> "$GITHUB_ENV"
+          for p in "$tool_home/hvigor/bin" "$tool_home/ohpm/bin" \
+                   "$tool_home/tool/node/bin" "$tool_home/sdk/default/openharmony/toolchains"; do
+            echo "$p" >> "$GITHUB_PATH"
+          done
+          # hvigor 通过 local.properties 定位 SDK（不提交，各机器路径不同）
+          echo "sdk.dir=$tool_home/sdk" > local.properties
+          echo "--- 工具链版本 ---"
+          java -version 2>&1 | head -1
+          node --version
+          ohpm --version || true
+          hvigorw --version --no-daemon || true
+
+      - name: 编译 Go 核心（可选）
+        if: ${{ inputs.build_core == true }}
+        run: |
+          set -euo pipefail
+          bash scripts/build-ohos-core.sh
+
+      - name: 检查 Go 核心产物（缺失仅警告，UI 降级打包）
+        run: |
+          so="entry/libs/arm64-v8a/libxray.so"
+          if [[ ! -f "$so" ]]; then
+            echo "::warning title=缺少 Go 核心::$so 不存在，本次为 UI 降级包（核心不启动）。正式包请先运行 scripts/build-ohos-core.sh 或勾选 build_core。"
+          else
+            ls -lh "$so"
+          fi
+          if [[ -f "$so" ]]; then
+            ls -lh "$so"
+          fi
+
+      - name: 安装 ohpm 依赖
+        run: ohpm install
+
+      - name: 构建 HAP（release）
+        run: |
+          set -o pipefail
+          hvigorw --mode module -p product=default -p buildMode=release assembleHap --no-daemon 2>&1 | tee "$RUNNER_TEMP/hap-build.log"
+
+      - name: 构建失败诊断
+        if: failure()
+        run: |
+          set -uo pipefail
+          echo '--- 产物目录 ---'
+          find entry/build -maxdepth 4 -name '*.hap' 2>/dev/null || echo '无 hap 产物'
+          echo '--- hvigor 日志错误行 ---'
+          log="$(find . -path '*outputs/build-logs/build.log' -print -quit 2>/dev/null || true)"
+          if [[ -n "$log" ]]; then
+            grep -nE 'ERROR|Error|Failed|error' "$log" | tail -n 40 || true
+            echo '--- 日志尾部 ---'
+            tail -n 60 "$log"
+          else
+            echo 'hvigor 未运行（失败点在工具链/ohpm 阶段）'
+            tail -n 60 "$RUNNER_TEMP/hap-build.log" 2>/dev/null || true
+          fi
+
+      - name: 上传 HAP 产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: V2rayNG-unsigned-hap
+          path: entry/build/default/outputs/default/*.hap
+          if-no-files-found: error

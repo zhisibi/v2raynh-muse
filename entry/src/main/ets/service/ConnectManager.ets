@@ -5,6 +5,7 @@ import { SettingsStore } from '../model/SettingsStore';
 import { buildXrayConfig, CONFIG_FILE_NAME } from '../model/XrayConfig';
 import { LogStore } from '../model/LogStore';
 import { VpnService } from './VpnService';
+import { ensureAssets } from '../model/AssetInstaller';
 
 const STATUS_FILE = 'vpn_status.json';
 
@@ -60,6 +61,8 @@ export class ConnectManager {
       return '请先在「节点」页选择一个节点';
     }
     const settings = SettingsStore.get();
+    // 连接前兜底释放 geo 数据（启动时未完成/失败时在此补齐）
+    await ensureAssets();
     const configJson: string = buildXrayConfig(selected.profile, settings);
     try {
       writeTextFile(filesDir() + '/' + CONFIG_FILE_NAME, configJson);

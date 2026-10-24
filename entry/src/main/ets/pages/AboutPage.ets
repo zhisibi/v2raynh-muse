@@ -46,7 +46,7 @@ struct AboutPage {
           .fontSize(12)
           .fontColor(Pal.sub)
           .margin({ top: 4 })
-        Text('移植自 Android v2rayNG 2.3.13（2dust，GPL-3.0）。核心为 XTLS Xray-core，经 OpenHarmony Go 工具链编译为 libxray.so，TUN 转发用 hev-socks5-tunnel。geoip/geosite 数据文件随核心资产置于应用数据目录 xray_assets（真机需放入 geoip.dat/geosite.dat）。')
+        Text('移植自 Android v2rayNG 2.3.13（2dust，GPL-3.0）。核心为 XTLS Xray-core，经 OpenHarmony Go 工具链编译为 libxray.so，TUN 转发用 hev-socks5-tunnel。geoip/geosite 数据文件已内置，首次启动自动释放到应用数据目录 xray_assets。')
           .fontSize(12)
           .fontColor(Pal.sub)
           .margin({ top: 16 })

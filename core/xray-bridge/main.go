@@ -113,7 +113,8 @@ func XrayStop() {
 //
 //export XrayVersion
 func XrayVersion() *C.char {
-	return cString(core.VersionStatement())
+	// xray-core v1.8.24: VersionStatement() 返回 []string，需拼接
+	return cString(strings.Join(core.VersionStatement(), " "))
 }
 
 // XrayLastError 返回最近一次错误（NAPI 侧负责在读取后……注意：返回的 C 字符串

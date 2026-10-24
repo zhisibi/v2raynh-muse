@@ -342,7 +342,7 @@ export struct MineTab {
               .fontSize(15)
               .fontColor(Pal.text)
               .layoutWeight(1)
-            Text('1.1.0 · 内核 ' + (coreVersion().length > 0 ? coreVersion() : '未加载') + ' ›')
+            Text('1.1.1 · 内核 ' + (coreVersion().length > 0 ? coreVersion() : '未加载') + ' ›')
               .fontSize(12)
               .fontColor(Pal.sub)
           }

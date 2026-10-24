@@ -72,3 +72,14 @@
 | 扫码导入 | `ServersTab.scanImport` | ScanKit `scanBarcode.startScanForResult`；CAMERA 权限已声明；失败提示走剪贴板 |
 | 日志保存 | `LogsPage.saveLogsToFile` | CoreFileKit picker `DocumentViewPicker.save` + fileIo 写入 |
 | 按应用代理 | Settings/ConnectManager/扩展 | `vpn_perapp.json` 跨进程传配置；allow 模式设 allowedApplications 且清空 blocked |
+
+## v1.1.1 诊断增强对照
+
+| 项 | 文件 | 说明 |
+|---|---|---|
+| protect 回显 | `vpnextension/DynCompat.ts`、`V2RayVpnExtension.ets` | protectProcessNetDyn 返回 boolean；diag 打 `结果=ok/缺失或失败` |
+| hev 健康 | `core/hev/hev_adapter.c` | 原子标志+退出码，导出 HevTunnelRunning/HevTunnelLastRc |
+| tunStatus 桥 | `entry/src/main/cpp/xray_napi.cpp`、`model/CoreBridge.ets` | NAPI `tunStatus()` JSON；诊断符号缺失返回 lastRc=-999 |
+| hev 日志 | 同上 + 扩展 | StartTun 第三参 logDir → setenv HEV_LOG_PATH；adapter dup2 stderr→hev.log；yaml log-level debug |
+| 分段探针 | `V2RayVpnExtension.scheduleProbes/socksSelfCheck/dumpHevLogTail` | 1s tunStatus / 3s 节点+自检 / 9s 流量+hev.log 尾；纯 diag，不影响连接 |
+| 诊断区 UI | `pages/LogsPage.ets`、`model/LogStore.readDiagText` | 页内展示 vpn_diag.txt，导出路径不变 |

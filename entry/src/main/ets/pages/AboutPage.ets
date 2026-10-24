@@ -34,7 +34,7 @@ struct AboutPage {
           .fontWeight(FontWeight.Bold)
           .fontColor(Pal.text)
           .margin({ top: 12 })
-        Text('HarmonyOS NEXT 移植版 1.1.0 (101)')
+        Text('HarmonyOS NEXT 移植版 1.1.1 (102)')
           .fontSize(13)
           .fontColor(Pal.sub)
           .margin({ top: 6 })

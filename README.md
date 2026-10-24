@@ -101,3 +101,24 @@ bash tests/run-smoke.sh        # tsc strict 编译 UriParser/XrayConfig 后 Node
 4. Go 桥 API 随 xray-core 大版本变化需按编译报错微调（v26 已适配 GetFeature/GetCounter 单返回值签名）。
 
 详细逐项对照见 [docs/PORTING.md](docs/PORTING.md)。
+
+## v1.1.1 诊断增强（数据面分段探针）
+
+背景：v1.1.0 真机全 step 走完（tun-ok/protect/startXray/startTun 全部 true、状态 running）仍无法联网；生成配置已用官方 Xray 26.10.21 二进制验过 Configuration OK，问题在设备数据面。1.1.1 不改连接主流程，只加可观测性，一轮定位死在哪一段：
+
+- **protect 真实回显**：`protectProcessNetDyn` 改返回 boolean，diag 打印 `protectProcessNet 结果=ok/缺失或失败`（此前静默失败也打「已调用」）。
+- **hev 健康回显**：适配层新增 `HevTunnelRunning/HevTunnelLastRc`，NAPI 新增 `tunStatus()` 返回 `{"running":bool,"lastRc":int}`。
+- **hev 日志落地**：yaml `misc.log-level: debug`；`startTun` 新增 logDir 参数，桥 setenv `HEV_LOG_PATH=<filesDir>/hev.log`，adapter 线程把 stderr 重定向到该文件；探针时尾部约 30 行并入 vpn_diag（`[hev.log]` 前缀）。
+- **扩展分段探针**（TUN 连接成功后自动触发，只写 vpn_diag）：约 1 秒 tunStatus；约 3 秒节点探针（testDelay 实测 generate_204）+ tunStatus + **SOCKS 自检**（TCPSocket 手工 SOCKS5 握手/CONNECT/HTTP GET gstatic，读响应首行）；约 9 秒流量探针（queryTraffic 原文）+ tunStatus + hev.log 尾部。
+- **日志页新增「VPN 诊断」区**：页内直接显示 vpn_diag.txt 全文（导出文本原本就含它，回传路径不变）。
+
+探针判读表：
+
+| 现象 | 指向 |
+|---|---|
+| `探针/tunStatus` running=false 或 lastRc≠-1（已退出） | hev 线程已死：看 [hev.log] 尾部的退出原因（配置/fd/ioctl） |
+| 节点探针失败（-1）但 SOCKS 自检成功 | 不可能同时成立（自检本身经节点出站）——若出现，看 testDelay 临时/运行实例路径 |
+| 节点探针失败 + SOCKS 自检失败（握手/CONNECT 异常） | Xray 核心出站段：节点本身、REALITY 参数、或核心出站被回环进 TUN（结合 protect 结果看） |
+| SOCKS 自检成功（首行 HTTP/1.x 204）但浏览器不通 | 核心与节点没问题，问题在 TUN→hev 段或系统路由/DNS：看流量探针与 hev.log |
+| 流量探针 up/down 全 0 且 SOCKS 自检成功 | TUN 侧没有流量进来：hev 未真正读 TUN fd 或路由未生效 |
+| protect 结果=缺失或失败 | 防回环没生效，核心连节点的流量可能绕回 TUN 自环 |

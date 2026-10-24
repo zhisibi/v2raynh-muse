@@ -12,8 +12,9 @@ interface NativeCore {
   lastError(): string;
   queryTraffic(): string;
   testDelay(configJson: string, url: string, timeoutMs: number): number;
-  startTun(socksPort: number, mtu: number): boolean;
+  startTun(socksPort: number, mtu: number, logDir: string): boolean;
   stopTun(): void;
+  tunStatus(): string;
 }
 
 const nativeCore: NativeCore = nativeModule as Object as NativeCore;
@@ -84,12 +85,22 @@ export function testDelay(configJson: string, url: string, timeoutMs: number): n
   }
 }
 
-/** 启动 hev-socks5-tunnel（TUN fd -> SOCKS），符号缺失返回 false */
-export function startTun(socksPort: number, mtu: number): boolean {
+/** 启动 hev-socks5-tunnel（TUN fd -> SOCKS），符号缺失返回 false；
+ *  logDir 传 filesDir，桥侧据此把 hev debug 日志落盘到 <logDir>/hev.log */
+export function startTun(socksPort: number, mtu: number, logDir: string): boolean {
   try {
-    return Boolean(nativeCore.startTun(socksPort, mtu));
+    return Boolean(nativeCore.startTun(socksPort, mtu, logDir));
   } catch (e) {
     return false;
+  }
+}
+
+/** v1.1.1 诊断：hev 健康状态 JSON {"running":bool,"lastRc":int}；不可用返回 -999 版 */
+export function tunStatus(): string {
+  try {
+    return String(nativeCore.tunStatus());
+  } catch (e) {
+    return '{"running":false,"lastRc":-999}';
   }
 }
 

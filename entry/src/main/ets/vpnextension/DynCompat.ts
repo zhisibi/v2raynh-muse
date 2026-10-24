@@ -1,9 +1,17 @@
 // 动态兼容调用：protectProcessNet 在新版本 HarmonyOS 运行时存在，但本地
 // API 18 SDK 的 .d.ts 未声明；ArkTS 严格模式禁止动态成员访问，故用普通 .ts。
-export function protectProcessNetDyn(conn: Object): void {
+// v1.1.1：返回 boolean 回显真实结果（方法不存在/抛错 = false）。此前是 void
+// 静默 no-op，上层无论成败都打「已调用」，无法判断防回环到底生效没有。
+export function protectProcessNetDyn(conn: Object): boolean {
   const c = conn as any;
-  if (c && typeof c.protectProcessNet === 'function') {
+  if (!c || typeof c.protectProcessNet !== 'function') {
+    return false;
+  }
+  try {
     c.protectProcessNet();
+    return true;
+  } catch (e) {
+    return false;
   }
 }
 

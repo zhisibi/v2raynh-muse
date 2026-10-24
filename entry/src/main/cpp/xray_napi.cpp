@@ -20,12 +20,17 @@
  * hev C ABI（scripts/build-hevtun.sh 产物 libhevtun.so，适配层约定）：
  *   int         HevTunnelStart(const char* configYaml, int tunFd);
  *   void        HevTunnelStop(void);
- * 符号缺失时 startTun 返回 false 并记录日志（上层降级为仅 SOCKS 代理可用）。
+ *   int         HevTunnelLastRc(void);   // v1.1.1 诊断（可选符号）
+ *   int         HevTunnelRunning(void);  // v1.1.1 诊断（可选符号）
+ * 符号缺失时 startTun 返回 false 并记录日志（上层降级为仅 SOCKS 代理可用）；
+ * 诊断符号缺失时 tunStatus 返回 {"running":false,"lastRc":-999}。
  */
 #include "napi/native_api.h"
 #include "hilog/log.h"
 
 #include <atomic>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <dlfcn.h>
 #include <fcntl.h>
@@ -47,6 +52,8 @@ using XrayPingFn = int (*)(const char *configJson, const char *url, int timeoutM
 using XrayTrafficFn = const char *(*)();
 using HevStartFn = int (*)(const char *configYaml, int tunFd);
 using HevStopFn = void (*)();
+using HevLastRcFn = int (*)();
+using HevRunningFn = int (*)();
 
 static std::mutex g_mutex;
 static void *g_core_handle = nullptr;
@@ -60,6 +67,8 @@ static XrayTrafficFn g_traffic = nullptr;
 static void *g_hev_handle = nullptr;
 static HevStartFn g_hev_start = nullptr;
 static HevStopFn g_hev_stop = nullptr;
+static HevLastRcFn g_hev_last_rc = nullptr;
+static HevRunningFn g_hev_running = nullptr;
 
 static std::atomic<int> g_tun_template_fd{-1};
 static std::atomic<int> g_tun_mtu{1500};
@@ -119,6 +128,9 @@ static bool loadHev() {
         dlclose(handle);
         return false;
     }
+    // 可选诊断符号（v1.1.1）：缺失时 tunStatus 走 -999 降级
+    g_hev_last_rc = reinterpret_cast<HevLastRcFn>(dlsym(handle, "HevTunnelLastRc"));
+    g_hev_running = reinterpret_cast<HevRunningFn>(dlsym(handle, "HevTunnelRunning"));
     g_hev_handle = handle;
     return true;
 }
@@ -279,17 +291,28 @@ static napi_value TestDelay(napi_env env, napi_callback_info info) {
     return result;
 }
 
-// ---- startTun(socksPort, mtu): boolean ----
+// ---- startTun(socksPort, mtu, logDir): boolean ----
 // 从模板 fd dup 一份交给 hev；hev 配置 YAML 与 V2RayVpnExtension 的 TUN 地址保持一致。
+// v1.1.1：第三个参数 logDir（filesDir）——拼出 <logDir>/hev.log 后 setenv
+// HEV_LOG_PATH，hev adapter 线程据此把 stderr（debug 日志）重定向落盘。
 static napi_value StartTun(napi_env env, napi_callback_info info) {
-    size_t argc = 2;
-    napi_value args[2] = {nullptr, nullptr};
+    size_t argc = 3;
+    napi_value args[3] = {nullptr, nullptr, nullptr};
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
     int32_t socksPort = 10808;
     int32_t mtu = 1500;
     if (argc >= 2) {
         napi_get_value_int32(env, args[0], &socksPort);
         napi_get_value_int32(env, args[1], &mtu);
+    }
+    if (argc >= 3) {
+        std::string logDir;
+        if (getUtf8String(env, args[2], logDir, 4096) && !logDir.empty()) {
+            const std::string logPath = logDir + "/hev.log";
+            setenv("HEV_LOG_PATH", logPath.c_str(), 1);
+            OH_LOG_Print(LOG_APP, LOG_INFO, 0, NAPI_LOG_TAG,
+                         "HEV_LOG_PATH=%{public}s", logPath.c_str());
+        }
     }
     const int templateFd = g_tun_template_fd.load();
     if (templateFd < 0) {
@@ -318,7 +341,7 @@ static napi_value StartTun(napi_env env, napi_callback_info info) {
                   "  address: 127.0.0.1\n"
                   "  udp: udp\n"
                   "misc:\n"
-                  "  log-level: warn\n",
+                  "  log-level: debug\n",
                   mtu, socksPort);
     // 注意：hev 以阻塞方式跑事件循环的版本需放独立线程；本桥约定 HevTunnelStart
     // 内部自建工作线程并立即返回（见 build-hevtun.sh 适配层说明）。
@@ -330,6 +353,21 @@ static napi_value StartTun(napi_env env, napi_callback_info info) {
     OH_LOG_Print(LOG_APP, rc == 0 ? LOG_INFO : LOG_ERROR, 0, NAPI_LOG_TAG,
                  "HevTunnelStart rc=%d", rc);
     return makeBool(env, rc == 0);
+}
+
+// ---- tunStatus(): string ----
+// v1.1.1 诊断：返回 {"running":bool,"lastRc":int} JSON。
+// running = hev 事件循环线程是否还活着；lastRc = 线程退出码（运行中 -1，
+// 从未启动/诊断符号缺失 -999）。扩展用它在探针时点回显，区分假 running。
+static napi_value TunStatus(napi_env env, napi_callback_info info) {
+    (void)info;
+    if (!loadHev() || g_hev_running == nullptr || g_hev_last_rc == nullptr) {
+        return makeString(env, "{\"running\":false,\"lastRc\":-999}");
+    }
+    char buf[96];
+    std::snprintf(buf, sizeof(buf), "{\"running\":%s,\"lastRc\":%d}",
+                  g_hev_running() != 0 ? "true" : "false", g_hev_last_rc());
+    return makeString(env, buf);
 }
 
 // ---- stopTun(): void ----
@@ -356,6 +394,7 @@ static napi_value Init(napi_env env, napi_value exports) {
         {"testDelay", nullptr, TestDelay, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"startTun", nullptr, StartTun, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"stopTun", nullptr, StopTun, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"tunStatus", nullptr, TunStatus, nullptr, nullptr, nullptr, napi_default, nullptr},
     };
     napi_define_properties(env, exports, sizeof(desc) / sizeof(desc[0]), desc);
     return exports;

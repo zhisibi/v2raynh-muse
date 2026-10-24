@@ -105,6 +105,17 @@ export class LogStore {
     return out.join('\n');
   }
 
+  /** 读 VPN 扩展诊断文件全文（供日志页「VPN 诊断」区展示；无文件返回空串） */
+  static readDiagText(): string {
+    const dir: string = filesDir();
+    if (dir.length === 0) return '';
+    try {
+      return fs.readTextSync(dir + '/vpn_diag.txt', { encoding: 'utf-8' });
+    } catch (e) {
+      return '';
+    }
+  }
+
   static filePath(): string {
     return logFilePath;
   }

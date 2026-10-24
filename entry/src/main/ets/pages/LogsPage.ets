@@ -8,6 +8,7 @@ import { Pal, copyToClipboard } from '../components/Ui';
 @Component
 struct LogsPage {
   @State lines: LogLine[] = [];
+  @State diagText: string = '';
   @State msg: string = '';
   private listener: () => void = () => {
     this.lines = LogStore.getAll();
@@ -15,7 +16,12 @@ struct LogsPage {
 
   aboutToAppear(): void {
     this.lines = LogStore.getAll();
+    this.diagText = LogStore.readDiagText();
     LogStore.subscribe(this.listener);
+  }
+
+  refreshDiag(): void {
+    this.diagText = LogStore.readDiagText();
   }
 
   aboutToDisappear(): void {
@@ -133,6 +139,28 @@ struct LogsPage {
               .width('100%')
               .margin({ top: 4 })
           }, (l: LogLine, idx: number) => String(idx) + l.time + l.msg)
+
+          // VPN 诊断区（vpn_diag.txt 全文，与导出内容同源；扩展跨进程写入）
+          Row() {
+            Text('---- VPN 诊断（vpn_diag.txt）----')
+              .fontSize(13)
+              .fontWeight(FontWeight.Bold)
+              .fontColor(Pal.text)
+              .layoutWeight(1)
+            Text('刷新')
+              .fontSize(12)
+              .fontColor(Pal.accent)
+              .onClick(() => {
+                this.refreshDiag();
+              })
+          }
+          .width('100%')
+          .margin({ top: 18, bottom: 4 })
+
+          Text(this.diagText.length > 0 ? this.diagText : '（暂无 VPN 诊断记录，连接一次后生成）')
+            .fontSize(11)
+            .fontColor(Pal.sub)
+            .width('100%')
         }
         .width('100%')
         .padding({ left: 14, right: 14, top: 8, bottom: 20 })

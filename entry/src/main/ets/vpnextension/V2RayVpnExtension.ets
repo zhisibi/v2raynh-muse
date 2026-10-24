@@ -5,11 +5,14 @@
 // 仅代理模式（want 参数 v2rayng_mode=proxy）：不建 TUN，只 startXray，应用外流量需手动指代理。
 // 停止：onDestroy -> stopTun -> stopXray -> destroy TUN（反序）。
 // 状态文件写入必须带 TRUNC：澜舟教训——无 TRUNC 时旧残留字节损坏 JSON，UI 永远读不到状态。
-import { vpnExtension, VpnExtensionAbility } from '@kit.NetworkKit';
+import { vpnExtension, VpnExtensionAbility, socket } from '@kit.NetworkKit';
 import { Want } from '@kit.AbilityKit';
 import { fileIo as fs } from '@kit.CoreFileKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { attachTunFd, startXray, stopXray, startTun, stopTun, lastError } from '../model/CoreBridge';
+import {
+  attachTunFd, startXray, stopXray, startTun, stopTun, lastError,
+  tunStatus, queryTraffic, testDelay,
+} from '../model/CoreBridge';
 import { protectProcessNetDyn, setAllowedApplicationsDyn } from './DynCompat';
 import {
   CONFIG_FILE_NAME, TUN_ADDR_V4, TUN_PREFIX_V4, TUN_ADDR_V6, TUN_PREFIX_V6,
@@ -230,12 +233,10 @@ export default class V2RayVpnExtension extends VpnExtensionAbility {
     this.connection = connection;
     this.step('tun-ok');
     this.diag('TUN 就绪 fd=' + tunFd);
-    try {
-      protectProcessNetDyn(connection);
-      this.diag('protectProcessNet 已调用');
-    } catch (e) {
-      this.diag('protectProcessNet 调用异常');
-    }
+    // v1.1.1：protectProcessNetDyn 返回真实结果——方法在本地 SDK .d.ts 里
+    // 没声明，此前静默 no-op 也照打「已调用」，回环防没防根本判断不了。
+    const protectOk: boolean = protectProcessNetDyn(connection);
+    this.diag('protectProcessNet 结果=' + (protectOk ? 'ok' : '缺失或失败'));
     if (!attachTunFd(tunFd, MTU)) {
       throw new Error('attachTunFd 失败');
     }
@@ -262,14 +263,221 @@ export default class V2RayVpnExtension extends VpnExtensionAbility {
     }
     // hev TUN->SOCKS：失败必须诚实报错（v1.0 时返回 false 仍报 running，
     // TUN 里流量无处可去却显示已连接——v1.1.0 起直接抛错走 error 状态）。
+    // 第三个参数传 filesDir：NAPI 桥据此把 hev debug 日志落盘 hev.log。
     this.step('tun-start');
-    const tunOk: boolean = startTun(socksPort, MTU);
+    const tunOk: boolean = startTun(socksPort, MTU, this.context.filesDir);
     this.diag('startTun(hev) 返回 ' + tunOk);
     if (!tunOk) {
       throw new Error('TUN 转发启动失败：hev 未就绪（startTun=false），详见诊断日志');
     }
     this.writeStatus('running', '', 'running');
     this.diag('完成: Xray 核心运行中，TUN 转发已启动');
+    // v1.1.1 分段探针：只写 diag，绝不影响已建立的连接（见 scheduleProbes）
+    this.scheduleProbes(configText, socksPort);
+  }
+
+  // ================= v1.1.1 分段探针（诊断专用） =================
+  // 背景：v1.1.0 真机全 step 走完仍无法联网，需把数据面拆段验证：
+  //   hev 线程存活（tunStatus）/ 核心出站（节点探针）/ SOCKS 入站可用性
+  //   （SOCKS 自检）/ 隧道侧流量计数（流量探针）/ hev 自身日志（hev.log）。
+  // 全部结果只写 vpn_diag.txt；探针内部异常一律吞掉只记 diag，不改变
+  // 连接状态。判读表见 README / docs/PORTING.md 的 1.1.1 节。
+
+  private scheduleProbes(configText: string, socksPort: number): void {
+    setTimeout(() => {
+      try {
+        this.diag('探针/tunStatus: ' + tunStatus());
+      } catch (e) {
+        // 忽略
+      }
+    }, 1000);
+    setTimeout(() => {
+      // 节点探针：用运行实例实测当前节点出站（XrayPing 运行实例路径）
+      try {
+        const ms: number = testDelay(configText, 'http://www.gstatic.com/generate_204', 6000);
+        this.diag('探针/节点: testDelay(generate_204)=' + ms + (ms >= 0 ? 'ms' : '（失败）'));
+      } catch (e) {
+        this.diag('探针/节点: 异常 ' + (e instanceof Error ? e.message : String(e)));
+      }
+      try {
+        this.diag('探针/tunStatus: ' + tunStatus());
+      } catch (e) {
+        // 忽略
+      }
+      this.socksSelfCheck(socksPort).catch(() => {
+        // 内部已记 diag
+      });
+    }, 3000);
+    setTimeout(() => {
+      try {
+        this.diag('探针/流量: ' + queryTraffic());
+      } catch (e) {
+        // 忽略
+      }
+      try {
+        this.diag('探针/tunStatus: ' + tunStatus());
+      } catch (e) {
+        // 忽略
+      }
+      this.dumpHevLogTail();
+    }, 9000);
+  }
+
+  /** 把 hev.log 最后约 30 行并入 vpn_diag（每行加 [hev.log] 前缀） */
+  private dumpHevLogTail(): void {
+    const path: string = this.context.filesDir + '/hev.log';
+    let text: string = '';
+    try {
+      text = fs.readTextSync(path, { encoding: 'utf-8' });
+    } catch (e) {
+      this.diag('[hev.log] 文件不存在（hev 未写日志或重定向失败）');
+      return;
+    }
+    const all: string[] = text.split('\n');
+    const start: number = Math.max(0, all.length - 31);
+    this.diag('[hev.log] ---- 尾部 ' + (all.length - start) + ' 行 ----');
+    for (let i = start; i < all.length; i++) {
+      const line: string = all[i].trim();
+      if (line.length > 0) this.diag('[hev.log] ' + line);
+    }
+  }
+
+  /**
+   * SOCKS 自检：经 127.0.0.1:<socksPort> 手工走一遍 SOCKS5——无认证握手、
+   * CONNECT www.gstatic.com:80、发 HTTP GET 读响应首行。全程 6 秒总超时，
+   * 成败只记 diag。走通 = Xray socks 入站 + 节点出站 + 外网三段都没问题，
+   * 问题只剩 TUN->hev 段或系统路由/DNS。
+   */
+  private async socksSelfCheck(socksPort: number): Promise<void> {
+    const label: string = '探针/SOCKS自检: ';
+    let sock: socket.TCPSocket | null = null;
+    try {
+      sock = socket.constructTCPSocketInstance();
+      const chunks: Uint8Array[] = [];
+      let total: number = 0;
+      let waiter: (() => void) | null = null;
+      sock.on('message', (info: socket.SocketMessageInfo) => {
+        const u8: Uint8Array = new Uint8Array(info.message);
+        chunks.push(u8);
+        total += u8.length;
+        if (waiter !== null) {
+          const w: () => void = waiter;
+          waiter = null;
+          w();
+        }
+      });
+      const deadline: number = Date.now() + 6000;
+      const waitBytes = async (n: number): Promise<boolean> => {
+        while (total < n) {
+          if (Date.now() > deadline) return false;
+          await new Promise<void>((resolve: () => void) => {
+            waiter = resolve;
+            setTimeout(() => {
+              if (waiter === resolve) waiter = null;
+              resolve();
+            }, 200);
+          });
+        }
+        return true;
+      };
+      const take = (n: number): Uint8Array => {
+        const out: Uint8Array = new Uint8Array(n);
+        let off: number = 0;
+        while (off < n && chunks.length > 0) {
+          const head: Uint8Array = chunks[0];
+          const need: number = n - off;
+          if (head.length <= need) {
+            out.set(head, off);
+            off += head.length;
+            chunks.shift();
+          } else {
+            out.set(head.subarray(0, need), off);
+            chunks[0] = head.subarray(need);
+            off += need;
+          }
+        }
+        total -= off;
+        return out;
+      };
+      const addr: socket.NetAddress = { address: '127.0.0.1', port: socksPort, family: 1 };
+      const connOpts: socket.TCPConnectOptions = { address: addr, timeout: 6000 };
+      await sock.connect(connOpts);
+      const sendBuf = async (bytes: number[]): Promise<void> => {
+        const u8: Uint8Array = new Uint8Array(bytes.length);
+        for (let i = 0; i < bytes.length; i++) u8[i] = bytes[i];
+        const opts: socket.TCPSendOptions = { data: u8.buffer as ArrayBuffer };
+        await (sock as socket.TCPSocket).send(opts);
+      };
+      // 1) 握手：VER=5, NMETHODS=1, METHODS=[无认证]
+      await sendBuf([0x05, 0x01, 0x00]);
+      if (!await waitBytes(2)) {
+        this.diag(label + '握手无响应（超时）');
+        return;
+      }
+      const greet: Uint8Array = take(2);
+      if (greet[0] !== 0x05 || greet[1] !== 0x00) {
+        this.diag(label + '握手被拒 ver=' + greet[0] + ' method=' + greet[1]);
+        return;
+      }
+      // 2) CONNECT www.gstatic.com:80（域名形式）
+      const host: string = 'www.gstatic.com';
+      const req: number[] = [0x05, 0x01, 0x00, 0x03, host.length];
+      for (let i = 0; i < host.length; i++) req.push(host.charCodeAt(i));
+      req.push(0x00, 0x50);
+      await sendBuf(req);
+      if (!await waitBytes(4)) {
+        this.diag(label + 'CONNECT 无响应（超时）');
+        return;
+      }
+      const head4: Uint8Array = take(4);
+      if (head4[1] !== 0x00) {
+        this.diag(label + 'CONNECT 失败 rep=' + head4[1]);
+        return;
+      }
+      // 跳过绑定地址：ATYP=1:4+2 / 3:1+len+2 / 4:16+2
+      let skip: number = 0;
+      if (head4[3] === 0x01) skip = 6;
+      else if (head4[3] === 0x04) skip = 18;
+      else if (head4[3] === 0x03) {
+        if (!await waitBytes(1)) {
+          this.diag(label + 'CONNECT 地址段超时');
+          return;
+        }
+        skip = take(1)[0] + 2;
+      }
+      if (skip > 0 && !await waitBytes(skip)) {
+        this.diag(label + 'CONNECT 地址段超时');
+        return;
+      }
+      if (skip > 0) take(skip);
+      // 3) 明文 HTTP GET，读响应首行
+      const getReq: string = 'GET http://www.gstatic.com/generate_204 HTTP/1.0\r\n' +
+        'Host: www.gstatic.com\r\n\r\n';
+      const getOpts: socket.TCPSendOptions = { data: getReq };
+      await (sock as socket.TCPSocket).send(getOpts);
+      if (!await waitBytes(2)) {
+        this.diag(label + '已连通但 HTTP 无响应（超时）');
+        return;
+      }
+      let line: string = '';
+      const got: Uint8Array = take(Math.min(total, 120));
+      for (let i = 0; i < got.length; i++) {
+        const ch: string = String.fromCharCode(got[i]);
+        if (ch === '\n') break;
+        if (ch !== '\r') line += ch;
+      }
+      this.diag(label + '响应首行: ' + line);
+    } catch (e) {
+      this.diag(label + '异常 ' + (e instanceof Error ? e.message : String(e)));
+    } finally {
+      if (sock !== null) {
+        try {
+          await sock.close();
+        } catch (e) {
+          // 忽略
+        }
+      }
+    }
   }
 
   /** 拆隧道与核心（不写状态文件），供 onDestroy 与启动失败路径共用 */

@@ -1,74 +1,135 @@
 #!/usr/bin/env bash
 # 构建 hev-socks5-tunnel 鸿蒙版：libhevtun.so（TUN -> SOCKS5 转发）
 #
-# 产物：entry/libs/arm64-v8a/libhevtun.so
-# 上游：https://github.com/heiher/hev-socks5-tunnel（Android 侧 v2rayNG 用其
-#       Android.mk / jni 构建为独立可执行/库；鸿蒙需改 NDK clang + 静态适配层）
+# 产物：entry/libs/arm64-v8a/libhevtun.so（导出 HevTunnelStart/HevTunnelStop）
+# 上游：https://github.com/heiher/hev-socks5-tunnel（--recursive 克隆到
+#       .ohos-core-build/hev-src；含子模块 yaml / lwip / hev-task-system）
 #
-# 本脚本先做：环境校验 + 克隆上游 + 编译骨架。
-# 适配层约定（xray_napi.cpp 期望的 C ABI）：
-#   int  HevTunnelStart(const char* configYaml, int tunFd); // 内部自建线程跑事件循环
-#   void HevTunnelStop(void);
-# 上游原生入口是阻塞式 hev_socks5_tunnel_main_from_str()（以其头文件为准），
-# 因此正式移植时需在本目录的 hev_adapter.c 中：pthread_create 工作线程调
-# 上游入口、Stop 时调上游的 quit/stop 接口。适配层未补齐前本脚本会明确报错退出，
-# 不会产出假 .so；此时 App 仍可运行（startTun 返回 false，SOCKS 代理可用）。
+# 与上游 Android.mk 的对应关系（共享库目标 hev-socks5-tunnel）：
+#   - 源文件清单：各组件 build.mk 的 rwildcard(src/, *.c *.S) 递归收集；
+#   - 宏：-DENABLE_LIBRARY -DFD_SET_DEFINED -DSOCKLEN_T_DEFINED（同 Android.mk）；
+#     yaml 的 YAML_VERSION_* 与 hev-task-system 的 CONFIG_* 按各自 configs.mk 展开；
+#     ENABLE_MEMALLOC_SLICE 按 hev 顶层 Android.mk 意图关闭（不定义），
+#     ENABLE_IO_SPLICE_SYSCALL 不定义（OHOS musl 的 splice 可用性未验证，
+#     代码走 read/write 回退路径）；
+#   - 去掉 Android 专用：不编 jni/、不链 -llog；日志走 stderr；
+#   - COMMIT_ID 用上游 git short id（VERSION_CFLAGS 同上游 build.mk）。
+# 适配层：core/hev/hev_adapter.c —— pthread 包上游阻塞入口
+#   hev_socks5_tunnel_main_from_str / hev_socks5_tunnel_quit，
+#   导出 NAPI 桥约定的 HevTunnelStart/HevTunnelStop。
 #
-# Android.mk 移植点（对照上游 Android 构建）：
-#   1. LOCAL_MODULE/LOCAL_SRC_FILES 的源文件清单（src/*.c + 第三方 lwIP/yaml 源码）
-#      直接沿用，改走 clang -c 逐文件编译后 ar/ld -shared；
-#   2. Android 专用：去掉 -llog 链接与 JNI 入口（jni/ 目录不编），
-#      日志改走 OHOS hilog 或 stderr；
-#   3. 宏定义：保持上游 Android.mk 的 CFLAGS（如 -DHAVE_CONFIG_H 若有），
-#      补 -D_GNU_SOURCE 与 OHOS 的 sysroot include 路径；
-#   4. tun fd 由外部（NAPI 桥 dup 后）传入，不用上游 Android 的 VpnService fd 传递方式。
+# 用法：
+#   OHOS_NDK_HOME=~/ohos-build/ohos-clt/command-line-tools/sdk/default/openharmony/native \
+#     ./scripts/build-hevtun.sh
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-WORK="$ROOT/.ohos-core-build/hev"
+WORK="$ROOT/.ohos-core-build"
 OUT="$ROOT/entry/libs/arm64-v8a"
 mkdir -p "$WORK" "$OUT"
 
-OHOS_NDK_HOME="${OHOS_NDK_HOME:-}"
-if [[ -z "$OHOS_NDK_HOME" ]]; then
-  echo "请先设置 OHOS_NDK_HOME 指向 OpenHarmony SDK 的 native 目录"
-  exit 1
-fi
+OHOS_NDK_HOME="${OHOS_NDK_HOME:-$HOME/ohos-build/ohos-clt/command-line-tools/sdk/default/openharmony/native}"
 CLANG="$OHOS_NDK_HOME/llvm/bin/aarch64-unknown-linux-ohos-clang"
 if [[ ! -x "$CLANG" ]]; then
-  echo "找不到 aarch64 clang：$CLANG"
+  echo "找不到 aarch64 clang：$CLANG（请设置 OHOS_NDK_HOME）"
   exit 1
 fi
 
-SRC="$WORK/hev-socks5-tunnel"
+SRC="$WORK/hev-src"
 if [[ ! -d "$SRC/.git" ]]; then
-  echo "==> 克隆 hev-socks5-tunnel…"
+  echo "==> 克隆 hev-socks5-tunnel（--recursive）…"
   git clone --recursive https://github.com/heiher/hev-socks5-tunnel "$SRC"
 fi
 
-echo "上游结构："
-ls "$SRC"
-echo ""
-echo "Android.mk 参考（移植源文件清单以此为准）："
-find "$SRC" -name "Android.mk" -exec echo {} \; -exec cat {} \; || true
-
-ADAPTER="$ROOT/scripts/hev_adapter.c"
+ADAPTER="$ROOT/core/hev/hev_adapter.c"
 if [[ ! -f "$ADAPTER" ]]; then
-  cat <<'EOF'
-!! 适配层 scripts/hev_adapter.c 尚未编写（真机迭代第一项）：
-   需实现 HevTunnelStart/HevTunnelStop，内部以 pthread 调上游阻塞入口，
-   并处理 tunFd 所有权与日志重定向。骨架步骤：
-     1. 按上游 Android.mk 的 LOCAL_SRC_FILES 收集 src 与第三方源文件；
-     2. $CLANG --target=aarch64-linux-ohos --sysroot=$OHOS_NDK_HOME/sysroot
-        -fPIC -I<上游 include> -c 每个 .c 为 .o；
-     3. $CLANG -shared -o entry/libs/arm64-v8a/libhevtun.so *.o hev_adapter.o；
-     4. nm -D 验 HevTunnelStart/HevTunnelStop 符号。
-   在此之前，TUN 转发不可用，App 的 SOCKS/HTTP 代理与核心功能不受影响。
-EOF
+  echo "!! 适配层缺失：$ADAPTER"
   exit 2
 fi
 
-echo "==> 编译（适配层已存在，按其源文件清单执行）…"
-# TODO（真机迭代）：按上游版本锁定源文件清单后在此补全编译命令。
-echo "hev_adapter.c 存在但编译命令尚未锁定上游版本，未产出 .so。"
-exit 2
+REV_ID="$(git -C "$SRC" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+OBJ="$WORK/hev-obj"
+rm -rf "$OBJ"
+mkdir -p "$OBJ"
+
+INCLUDES=(
+  -I"$SRC/src"
+  -I"$SRC/src/misc"
+  -I"$SRC/src/core/include"
+  -I"$SRC/third-part/yaml/include"
+  -I"$SRC/third-part/yaml/src"
+  -I"$SRC/third-part/lwip/src/include"
+  -I"$SRC/third-part/lwip/src/ports/include"
+  -I"$SRC/third-part/hev-task-system/include"
+  -I"$SRC/third-part/hev-task-system/src"
+)
+BASE_FLAGS=(
+  --target=aarch64-linux-ohos
+  --sysroot="$OHOS_NDK_HOME/sysroot"
+  -fPIC -O2 -fno-stack-clash-protection
+  -D_GNU_SOURCE
+  -DFD_SET_DEFINED -DSOCKLEN_T_DEFINED -DENABLE_LIBRARY
+  -DCOMMIT_ID="\"$REV_ID\""
+  -DYAML_VERSION_MAJOR=0 -DYAML_VERSION_MINOR=2 -DYAML_VERSION_PATCH=5
+  -DYAML_VERSION_STRING="\"0.2.5\""
+  -DENABLE_STACK_OVERFLOW_DETECTION
+  -DCONFIG_STACK_BACKEND=STACK_MMAP
+  -DCONFIG_STACK_OVERFLOW_DETECTION=1
+  -DCONFIG_MEMALLOC_SLICE_ALIGN=16
+  -DCONFIG_MEMALLOC_SLICE_MAX_SIZE=4096
+  -DCONFIG_MEMALLOC_SLICE_MAX_COUNT=1000
+  -DCONFIG_SCHED_CLOCK=CLOCK_NONE
+  -w
+)
+
+echo "==> 收集源文件（同上游 rwildcard，按组件分组）…"
+# 必须按组件建静态库再链接（同 Android ndk-build 的 LOCAL_STATIC_LIBRARIES
+# 语义）：hev 本体与 hev-task-system 各自带了一份 hev-list/hev-rbtree，
+# 直接全 .o 链接会重复符号；归档后链接器只按需拉取成员即不冲突。
+AR="$OHOS_NDK_HOME/llvm/bin/llvm-ar"
+[[ -x "$AR" ]] || AR=ar
+
+compile_component() {
+  # $1=组件名 $2=源文件根目录 $3...=额外源文件
+  local name="$1" dir="$2"
+  shift 2
+  local objs=()
+  local i=0
+  local f o
+  while IFS= read -r f; do
+    i=$((i + 1))
+    o="$OBJ/${name}_$i.o"
+    "$CLANG" "${BASE_FLAGS[@]}" "${INCLUDES[@]}" -c "$f" -o "$o"
+    objs+=("$o")
+  done < <(find "$dir" \( -name '*.c' -o -name '*.S' \) | sort)
+  for f in "$@"; do
+    i=$((i + 1))
+    o="$OBJ/${name}_$i.o"
+    "$CLANG" "${BASE_FLAGS[@]}" "${INCLUDES[@]}" -c "$f" -o "$o"
+    objs+=("$o")
+  done
+  "$AR" rcs "$OBJ/lib$name.a" "${objs[@]}"
+  echo "    $name: ${#objs[@]} 个源文件"
+}
+
+compile_component hevmain "$SRC/src" "$ADAPTER"
+compile_component yaml "$SRC/third-part/yaml/src"
+compile_component lwip "$SRC/third-part/lwip/src"
+compile_component task "$SRC/third-part/hev-task-system/src"
+
+echo "==> 链接 libhevtun.so…"
+"$CLANG" --target=aarch64-linux-ohos --sysroot="$OHOS_NDK_HOME/sysroot" \
+  -shared -o "$OUT/libhevtun.so" \
+  -Wl,--whole-archive "$OBJ/libhevmain.a" -Wl,--no-whole-archive \
+  "$OBJ/libyaml.a" "$OBJ/liblwip.a" "$OBJ/libtask.a" \
+  -lpthread -lm
+ls -lh "$OUT/libhevtun.so"
+
+echo "==> 验符号…"
+NM="$OHOS_NDK_HOME/llvm/bin/llvm-nm"
+[[ -x "$NM" ]] || NM=nm
+"$NM" -D "$OUT/libhevtun.so" | grep -E "HevTunnel(Start|Stop)" || {
+  echo "!! 缺少 HevTunnelStart/HevTunnelStop 导出符号"
+  exit 1
+}
+echo "构建完成：$OUT/libhevtun.so"

@@ -67,6 +67,16 @@
           ],
           "when": "inuse"
         }
+      },
+      {
+        "name": "ohos.permission.CAMERA",
+        "reason": "$string:perm_camera_reason",
+        "usedScene": {
+          "abilities": [
+            "EntryAbility"
+          ],
+          "when": "inuse"
+        }
       }
     ],
     "type": "entry",

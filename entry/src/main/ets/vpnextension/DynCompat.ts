@@ -6,3 +6,16 @@ export function protectProcessNetDyn(conn: Object): void {
     c.protectProcessNet();
   }
 }
+
+// VpnConfig.allowedApplications 同样不在 API 18 的 .d.ts 类型里（只有
+// blockedApplications）；运行时若支持则动态写入 allow 名单，返回是否写成功。
+export function setAllowedApplicationsDyn(cfg: Object, bundles: string[]): boolean {
+  const c = cfg as any;
+  try {
+    c.allowedApplications = bundles.slice();
+    return Array.isArray(c.allowedApplications) &&
+      c.allowedApplications.length === bundles.length;
+  } catch (e) {
+    return false;
+  }
+}

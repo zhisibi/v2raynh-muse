@@ -10,3 +10,5 @@ entry/libs/arm64-v8a/*.so
 
 entry/.cxx/
 .cxx/
+
+core/xray-bridge/xray-bridge

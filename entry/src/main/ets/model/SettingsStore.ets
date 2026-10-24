@@ -36,6 +36,8 @@ function copySettings(s: AppSettings): AppSettings {
     subUpdateHours: s.subUpdateHours,
     tunEnabled: s.tunEnabled,
     logLevel: s.logLevel,
+    perAppMode: s.perAppMode === 'block' || s.perAppMode === 'allow' ? s.perAppMode : 'off',
+    perAppList: s.perAppList,
   };
   return out;
 }
@@ -59,6 +61,9 @@ export class SettingsStore {
         s.subUpdateHours = p.getSync('subUpdateHours', 24) as number;
         s.tunEnabled = p.getSync('tunEnabled', true) as boolean;
         s.logLevel = p.getSync('logLevel', 'warning') as string;
+        const pm: string = p.getSync('perAppMode', 'off') as string;
+        s.perAppMode = (pm === 'block' || pm === 'allow') ? pm : 'off';
+        s.perAppList = p.getSync('perAppList', '') as string;
       } catch (e) {
         // 使用默认值
       }
@@ -83,6 +88,8 @@ export class SettingsStore {
       p.putSync('subUpdateHours', s.subUpdateHours);
       p.putSync('tunEnabled', s.tunEnabled);
       p.putSync('logLevel', s.logLevel);
+      p.putSync('perAppMode', s.perAppMode);
+      p.putSync('perAppList', s.perAppList);
       p.flush();
     } catch (e) {
       // 忽略持久化失败

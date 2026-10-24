@@ -18,6 +18,10 @@ export interface AppSettings {
   subUpdateHours: number;
   tunEnabled: boolean;
   logLevel: string;
+  /** 按应用代理（基础版）：off 不启用 / block 黑名单不走 VPN / allow 仅名单走 VPN */
+  perAppMode: 'off' | 'block' | 'allow';
+  /** 名单：包名逗号分隔，如 com.example.app,com.example.browser */
+  perAppList: string;
 }
 
 export function defaultSettings(): AppSettings {
@@ -33,6 +37,8 @@ export function defaultSettings(): AppSettings {
     subUpdateHours: 24,
     tunEnabled: true,
     logLevel: 'warning',
+    perAppMode: 'off',
+    perAppList: '',
   };
   return s;
 }
@@ -438,6 +444,14 @@ export function buildXrayConfig(p: ProfileItem, s: AppSettings): string {
   dnsOut['tag'] = 'dns-out';
   dnsOut['protocol'] = 'dns';
   outbounds.push(dnsOut);
+  if (s.tunEnabled) {
+    // TUN 模式专用 DNS 出站（tag=dns）：进隧道后的 DNS 查询由 Xray 内置 DNS
+    // 服务处理（dns.servers 已做防泄漏分流），规则见下方 routing 首条。
+    const dnsTun: JsonObj = {};
+    dnsTun['tag'] = 'dns';
+    dnsTun['protocol'] = 'dns';
+    outbounds.push(dnsTun);
+  }
   root['outbounds'] = outbounds;
 
   const routing: JsonObj = {};
@@ -452,6 +466,17 @@ export function buildXrayConfig(p: ProfileItem, s: AppSettings): string {
     if (port.length > 0) r['port'] = port;
     rules.push(r);
   };
+  if (s.tunEnabled) {
+    // TUN 模式首条规则：经 socks 入站进来的 UDP/53（hev 转发的 DNS 包）
+    // 交给内置 DNS 出站（tag=dns），避免 DNS 在隧道内绕圈或泄漏。
+    const dnsRule: JsonObj = {};
+    dnsRule['type'] = 'field';
+    dnsRule['inboundTag'] = ['socks'];
+    dnsRule['network'] = 'udp';
+    dnsRule['port'] = '53';
+    dnsRule['outboundTag'] = 'dns';
+    rules.push(dnsRule);
+  }
   // DNS 查询强制走 dns-out
   addRule('dns-out', [], [], '53');
   if (s.routingMode === 'global') {

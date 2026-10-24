@@ -31,8 +31,9 @@ export struct HomeTab {
     if (this.status === 'running') {
       try {
         const t: Record<string, number> = JSON.parse(queryTraffic()) as Record<string, number>;
-        this.upTotal = Number(t['up'] ?? 0);
-        this.downTotal = Number(t['down'] ?? 0);
+        // 桥返回累计字节（upTotal/downTotal，与 up/down 同值）；速率由采样差分，页面只展示累计
+        this.upTotal = Number(t['upTotal'] ?? t['up'] ?? 0);
+        this.downTotal = Number(t['downTotal'] ?? t['down'] ?? 0);
       } catch (e) {
         // 忽略
       }

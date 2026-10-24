@@ -3,7 +3,8 @@
 把 Android 的 [v2rayNG](https://github.com/2dust/v2rayNG)（2.3.13，Xray 内核）移植到鸿蒙原生（ArkTS/ArkUI）。
 
 - **包名（新）**：`com.bosh.v2rayng`（应用名仍为 v2rayNG）
-- **版本**：1.0.0 (100)，vendor=bosh
+- **版本**：1.1.0 (101)，vendor=bosh
+- **Xray 内核**：v26.10.21（最新；tag commit 1b1647cd 的 pseudo-version 固定，Go 1.27 OHOS 工具链编译）
 - **图标**：原版 v2rayNG 图标（白色背景，源图来自安卓工程 `ic_launcher-web.png`）
 - **许可证**：随原项目 GPL-3.0
 
@@ -37,7 +38,9 @@ LibXray（gomobile AAR）运行核心 → VpnService 建 TUN → hev-socks5-tunn
 - 订阅：添加/编辑/删除/手动与定时更新，`subscription-userinfo` 流量/到期解析，UA `v2rayNG/Harmony`
 - 路由模式：规则（geoip/geosite cn 直连）/ 全局 / 直连；DNS 防泄漏分流
 - TUN 全局模式（双栈、IPv6）与仅代理模式可切换；SOCKS 10808 / HTTP 10809
-- 内置日志（老板铁律）：内存 + `filesDir/logs/v2rayng.log` 落盘 + 扩展诊断 `vpn_diag.txt`，日志页可导出（剪贴板）
+- 内置日志（老板铁律）：内存 + `filesDir/logs/v2rayng.log` 落盘 + 扩展诊断 `vpn_diag.txt`，日志页可导出（剪贴板 / 系统保存到文件）
+- 扫码导入（Scan Kit）、全部测速（经核心 XrayPing 实测，可取消）、流量统计（核心 stats 累计字节）
+- 按应用代理（基础版）：黑名单/白名单包名名单，TUN 建连时经 `vpn_perapp.json` 传给扩展
 - 备份：节点 JSON 导出/导入（剪贴板）
 
 ## 构建
@@ -66,12 +69,12 @@ export OHOS_NDK_HOME=~/ohos-build/ohos-clt/command-line-tools/sdk/default/openha
 ./scripts/build-ohos-core.sh   # 产物 entry/libs/arm64-v8a/libxray.so
 ```
 
-另需把 `geoip.dat`、`geosite.dat` 放到真机应用数据目录 `files/xray_assets/`（或后续版本内置到 HAP rawfile 并首启释放，真机迭代项）。
+`geoip.dat`、`geosite.dat` 已内置于 HAP rawfile，首启/连接前由 AssetInstaller 自动释放到应用数据目录 `files/xray_assets/`。
 
 ### hev TUN 转发（libhevtun.so）
 
 ```bash
-./scripts/build-hevtun.sh      # 适配层未补齐前会明确报错；不影响 SOCKS 代理使用
+./scripts/build-hevtun.sh      # 需 OHOS_NDK_HOME；产物 entry/libs/arm64-v8a/libhevtun.so
 ```
 
 ### 冒烟测试（纯逻辑）
@@ -80,15 +83,21 @@ export OHOS_NDK_HOME=~/ohos-build/ohos-clt/command-line-tools/sdk/default/openha
 bash tests/run-smoke.sh        # tsc strict 编译 UriParser/XrayConfig 后 Node 运行断言
 ```
 
-## 已知限制 / TODO（真机项）
+## v1.1.0 完成状态
 
-1. **libxray.so 未随仓编译**：需跑 `build-ohos-core.sh`（OHOS Go fork 编 Xray，数十分钟）。没有它时 UI 完整可用但核心不启动（日志与状态会明确报错）。
-2. **hev 适配层**：`hev_adapter.c` 未写，TUN→SOCKS 转发未生效；当前 TUN 建好、核心起来后，系统级流量转发待该库补齐。SOCKS/HTTP 本地代理不受影响。
-3. **XrayPing/XrayTraffic 为占位**：Go 桥 v1 返回 -1 / `{}`；UI 测速回退 TCP 直连，流量显示为 0。后续经 core stats API 补齐。
-4. **geoip/geosite 资产**：路由规则引用 `geoip:cn` 等类别，需 dat 文件就位，否则核心启动报错（日志可见）。
-5. **扫码导入**：未接 Scan Kit（TODO 占位），先用剪贴板/粘贴导入。
-6. **日志导出**：现走复制剪贴板 + 落盘路径；系统保存/分享（picker/ShareKit）待补。
-7. **真机未验证项**：VPN 授权流程、protectProcessNet 防回环实效、hev 接入后端到端流量、后台保活、WireGuard/Hysteria2 实际握手。
-8. Go 桥 `core.VersionStatement()` 等 API 名以构建时 xray-core 版本为准，编译若报 API 变更按报错调整（见 docs/PORTING.md）。
+- **内核 v26.10.21**：Go 1.27 工具链（sysit/ohos-go `ohos-1.27-base` 自建 go1.27.1-ohos）重编 `libxray.so`，Xray* 全符号、TPREL=0；`coreVersion()` 运行时返回 “Xray 26.10.21 …”。
+- **TUN 打通**：`libhevtun.so` 已落地——上游 hev-socks5-tunnel 全量源码（lwip/yaml/hev-task-system）以 OHOS NDK clang 按组件归档链接，适配层 `core/hev/hev_adapter.c` 以 pthread 包上游阻塞入口 `hev_socks5_tunnel_main_from_str`/`hev_socks5_tunnel_quit`，导出 `HevTunnelStart/HevTunnelStop`。TUN 模式下 startTun 失败会写 error 状态（step=tun-start），不再假报已连接。TUN 流量里的 UDP/53 由路由规则（socks 入站 → 内置 dns 出站）交给 Xray 内置 DNS 防泄漏处理。
+- **真测速**：`XrayPing` 实现——未连接时起临时实例经该节点出站实测，连接中经运行实例入站测当前节点；UI 全部测速已接通（带进度/取消，失败回退 TCP）。
+- **流量统计**：`XrayTraffic` 读运行实例 stats.Manager 的 proxy/direct 出站累计字节，Home 页展示累计上/下行。
+- **扫码导入**：Scan Kit `startScanForResult`，需相机权限（已在 module.json5 声明）。
+- **日志保存**：日志页新增「存文件」，系统保存选择器写入完整日志。
+- **按应用代理（基础版）**：设置里选关闭/黑名单/白名单 + 包名名单。
+
+## 已知限制 / 真机验证点
+
+1. **真机未验证**：hev 在 OHOS TUN fd 上的实际转发（上游 set_offload 的 TUNGETIFF 等 ioctl 在鸿蒙 fd 上会失败但应被忽略）、protectProcessNet 防回环实效、VPN 授权流程、后台保活、WireGuard/Hysteria2 实际握手、扫码与保存选择器的真机表现——请按：TUN 连接后浏览器开外网、看 vpn_diag.txt 的 step 是否走到 running、日志页流量数字是否增长 来验收。
+2. **libxray.so 未随仓提交**（.gitignore）：克隆仓库后需跑 `build-ohos-core.sh` + `build-hevtun.sh` 再打 HAP；没有 libxray.so 时 UI 可用但核心不启动（日志/状态明确报错）。
+3. XrayPing 在已连接时只能测当前节点（临时实例入站端口与运行实例冲突），全部测速在连接中自动回退 TCP 直连并在提示中标注。
+4. Go 桥 API 随 xray-core 大版本变化需按编译报错微调（v26 已适配 GetFeature/GetCounter 单返回值签名）。
 
 详细逐项对照见 [docs/PORTING.md](docs/PORTING.md)。

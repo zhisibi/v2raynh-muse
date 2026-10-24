@@ -8,6 +8,13 @@ import { VpnService } from './VpnService';
 import { ensureAssets } from '../model/AssetInstaller';
 
 const STATUS_FILE = 'vpn_status.json';
+export const PERAPP_FILE_NAME = 'vpn_perapp.json';
+
+/** vpn_perapp.json 结构（扩展进程读取，UI 进程 Preferences 它读不到） */
+export interface PerAppConfig {
+  mode: string; // off | block | allow
+  list: string[]; // 包名列表
+}
 
 export interface VpnStatus {
   state: string;
@@ -71,6 +78,18 @@ export class ConnectManager {
     }
     LogStore.push('连接', '正在连接 ' + selected.profile.remarks + '（' + selected.profile.configType + '）模式=' +
       (settings.tunEnabled ? 'TUN' : '仅代理'));
+    // 按应用代理配置写文件供扩展读取（扩展与 UI 不在同一进程）
+    try {
+      const perApp: PerAppConfig = {
+        mode: settings.perAppMode,
+        list: settings.perAppList.split(',')
+          .map((x: string) => x.trim())
+          .filter((x: string) => x.length > 0),
+      };
+      writeTextFile(filesDir() + '/' + PERAPP_FILE_NAME, JSON.stringify(perApp));
+    } catch (e) {
+      LogStore.push('连接', '写入按应用代理配置失败（忽略，用默认）');
+    }
     try {
       fs.unlinkSync(filesDir() + '/' + STATUS_FILE);
     } catch (e) {

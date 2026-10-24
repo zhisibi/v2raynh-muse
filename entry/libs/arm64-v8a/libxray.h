@@ -21,7 +21,7 @@ extern const char *_GoStringPtr(_GoString_ s);
 /* Start of preamble from import "C" comments.  */
 
 
-#line 12 "main.go"
+#line 10 "main.go"
 
 #include <stdlib.h>
 
@@ -91,7 +91,7 @@ extern int XrayStart(char* configJSON, char* assetDir);
 extern void XrayStop(void);
 extern char* XrayVersion(void);
 extern char* XrayLastError(void);
-extern int XrayPing(char* configJSON, char* url, int timeoutMs);
+extern int XrayPing(char* configJSON, char* urlStr, int timeoutMs);
 extern char* XrayTraffic(void);
 extern void XrayFreeCString(char* p);
 

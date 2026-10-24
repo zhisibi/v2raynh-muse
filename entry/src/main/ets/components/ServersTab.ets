@@ -1,11 +1,19 @@
 // v2rayNG Harmony · 节点页：按订阅分组、选中/删除/编辑、导入、手动添加、测速
 import { router } from '@kit.ArkUI';
+import { scanBarcode, scanCore } from '@kit.ScanKit';
 import { ServerStore, ServerEntry } from '../model/ServerStore';
 import { SubscriptionManager, Subscription } from '../model/SubscriptionManager';
 import { parseUriList, parseSubscriptionText, ProfileItem, toUri } from '../model/UriParser';
 import { ConnectManager } from '../service/ConnectManager';
 import { LogStore } from '../model/LogStore';
+import { SettingsStore } from '../model/SettingsStore';
+import { buildXrayConfig } from '../model/XrayConfig';
+import { testDelay } from '../model/CoreBridge';
 import { Pal, tcpPing, readClipboard, copyToClipboard } from './Ui';
+
+function sleepFrame(): Promise<void> {
+  return new Promise((resolve: () => void) => setTimeout(() => resolve(), 10));
+}
 
 @Component
 export struct ServersTab {
@@ -15,6 +23,8 @@ export struct ServersTab {
   @State showImport: boolean = false;
   @State importText: string = '';
   @State testing: boolean = false;
+  @State testProgress: string = '';
+  private testCancel: boolean = false;
 
   onTick(): void {
     this.rev++;
@@ -56,22 +66,80 @@ export struct ServersTab {
     this.rev++;
   }
 
-  async testOne(e: ServerEntry): Promise<void> {
+  async testOne(e: ServerEntry, useCore: boolean): Promise<void> {
+    // 优先经 Xray 核心实测（临时实例走该节点出站访问测试 URL）；
+    // 核心不可用/失败时回退 TCP 直连（仅反映端口可达性）。
+    if (useCore) {
+      const cfg: string = buildXrayConfig(e.profile, SettingsStore.get());
+      const d: number = testDelay(cfg, 'http://www.gstatic.com/generate_204', 4000);
+      if (d >= 0) {
+        ServerStore.setDelay(e.id, d);
+        return;
+      }
+    }
     const ms: number = await tcpPing(e.profile.server, parseInt(e.profile.serverPort, 10), 3000);
     ServerStore.setDelay(e.id, ms >= 0 ? ms : -2);
   }
 
   async testAll(): Promise<void> {
-    if (this.testing) return;
+    if (this.testing) {
+      // 测速中再次点击 = 取消
+      this.testCancel = true;
+      return;
+    }
+    // 已连接时核心测速只能测当前节点（临时实例端口冲突），故连接中走 TCP 直连
+    const useCore: boolean = ConnectManager.status() !== 'running';
     this.testing = true;
-    this.hint = '测速中（TCP 直连，仅供参考）…';
+    this.testCancel = false;
+    this.hint = useCore ? '测速中（经核心实测）…' : '测速中（连接中，TCP 直连）…';
     const list: ServerEntry[] = this.entries();
     for (let i = 0; i < list.length; i++) {
-      await this.testOne(list[i]);
+      if (this.testCancel) {
+        this.hint = '测速已取消（' + i + '/' + list.length + '）';
+        break;
+      }
+      this.testProgress = (i + 1) + '/' + list.length;
       this.rev++;
+      await this.testOne(list[i], useCore);
+      this.rev++;
+      // 让出主线程一帧，避免连续同步调用饿死 UI
+      await sleepFrame();
     }
     this.testing = false;
-    this.hint = '测速完成';
+    this.testProgress = '';
+    if (!this.testCancel) this.hint = '测速完成';
+    LogStore.push('测速', '全部测速结束（核心=' + useCore + '，共 ' + list.length + ' 个）');
+  }
+
+  /** 扫码导入（Scan Kit）：扫到链接文本后走订阅文本解析导入 */
+  async scanImport(): Promise<void> {
+    try {
+      const options: scanBarcode.ScanOptions = {
+        scanTypes: [scanCore.ScanType.ALL],
+        enableMultiMode: true,
+        enableAlbum: false,
+      };
+      const result: scanBarcode.ScanResult =
+        await scanBarcode.startScanForResult(getContext(this), options);
+      const text: string = result.originalValue;
+      if (text.trim().length === 0) {
+        this.hint = '未扫到内容';
+        return;
+      }
+      const profiles: ProfileItem[] = parseSubscriptionText(text);
+      if (profiles.length === 0) {
+        this.hint = '二维码内容未解析出节点';
+        return;
+      }
+      ServerStore.addMany(profiles);
+      LogStore.push('导入', '扫码导入 ' + profiles.length + ' 个节点');
+      this.hint = '扫码已导入 ' + profiles.length + ' 个节点';
+      this.rev++;
+    } catch (e) {
+      // Scan Kit 不可用/无相机权限/用户取消：提示改用剪贴板导入
+      this.hint = '扫码不可用，请用剪贴板导入';
+      LogStore.push('导入', '扫码失败: ' + (e instanceof Error ? e.message : String(e)));
+    }
   }
 
   delayText(e: ServerEntry): string {
@@ -234,11 +302,23 @@ export struct ServersTab {
         }
         .width('100%')
 
-        Text('扫码导入：TODO（需 Scan Kit，真机迭代时补；当前用剪贴板/粘贴导入）')
-          .fontSize(11)
-          .fontColor(Pal.sub)
-          .width('100%')
-          .margin({ top: 6 })
+        Row() {
+          Text('📷 扫码导入')
+            .fontSize(13)
+            .fontColor(Pal.accent)
+            .padding({ left: 10, right: 10, top: 6, bottom: 6 })
+            .borderRadius(15)
+            .backgroundColor(Pal.accentSoft)
+            .onClick(() => {
+              this.scanImport();
+            })
+          Text('扫描节点二维码直接导入；不可用时用剪贴板导入')
+            .fontSize(11)
+            .fontColor(Pal.sub)
+            .margin({ left: 8 })
+        }
+        .width('100%')
+        .margin({ top: 8 })
 
         if (this.showImport) {
           Column() {
@@ -272,7 +352,7 @@ export struct ServersTab {
             .fontSize(12)
             .fontColor(Pal.accent)
             .layoutWeight(1)
-          Text(this.testing ? '测速中…' : '全部测速')
+          Text(this.testing ? ('取消测速 ' + this.testProgress) : '全部测速')
             .fontSize(12)
             .fontColor(Pal.accent)
             .onClick(() => {

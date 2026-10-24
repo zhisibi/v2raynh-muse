@@ -18,6 +18,8 @@ export struct MineTab {
   @State remoteDns: string = '1.1.1.1';
   @State localDns: string = '223.5.5.5';
   @State subHours: string = '24';
+  @State perAppMode: string = 'off';
+  @State perAppList: string = '';
 
   onTick(): void {
     const s: AppSettings = SettingsStore.get();
@@ -26,6 +28,25 @@ export struct MineTab {
     this.remoteDns = s.remoteDns;
     this.localDns = s.localDns;
     this.subHours = String(s.subUpdateHours);
+    this.perAppMode = s.perAppMode;
+    this.perAppList = s.perAppList;
+    this.rev++;
+  }
+
+  setPerAppMode(m: string): void {
+    this.perAppMode = m;
+    const s: AppSettings = SettingsStore.get();
+    s.perAppMode = (m === 'block' || m === 'allow') ? m : 'off';
+    SettingsStore.save(s);
+    this.rev++;
+  }
+
+  savePerAppList(): void {
+    const s: AppSettings = SettingsStore.get();
+    s.perAppList = this.perAppList.trim();
+    SettingsStore.save(s);
+    this.msg = '按应用代理名单已保存（重连后生效）';
+    LogStore.push('设置', '按应用代理 mode=' + s.perAppMode + ' list=' + s.perAppList);
     this.rev++;
   }
 
@@ -234,6 +255,72 @@ export struct MineTab {
         .margin({ top: 12 })
 
         Column() {
+          Text('按应用代理')
+            .fontSize(14)
+            .fontColor(Pal.text)
+            .width('100%')
+          Text('黑名单=名单内应用不走 VPN；白名单=仅名单内应用走 VPN。填包名，逗号分隔。仅 TUN 模式生效')
+            .fontSize(12)
+            .fontColor(Pal.sub)
+            .width('100%')
+            .margin({ top: 4 })
+          Row({ space: 8 }) {
+            Text('关闭')
+              .fontSize(13)
+              .fontColor(this.perAppMode === 'off' ? '#FFFFFF' : Pal.text)
+              .padding({ left: 16, right: 16, top: 7, bottom: 7 })
+              .borderRadius(17)
+              .backgroundColor(this.perAppMode === 'off' ? Pal.accent : Pal.chip)
+              .onClick(() => {
+                this.setPerAppMode('off');
+              })
+            Text('黑名单')
+              .fontSize(13)
+              .fontColor(this.perAppMode === 'block' ? '#FFFFFF' : Pal.text)
+              .padding({ left: 16, right: 16, top: 7, bottom: 7 })
+              .borderRadius(17)
+              .backgroundColor(this.perAppMode === 'block' ? Pal.accent : Pal.chip)
+              .onClick(() => {
+                this.setPerAppMode('block');
+              })
+            Text('白名单')
+              .fontSize(13)
+              .fontColor(this.perAppMode === 'allow' ? '#FFFFFF' : Pal.text)
+              .padding({ left: 16, right: 16, top: 7, bottom: 7 })
+              .borderRadius(17)
+              .backgroundColor(this.perAppMode === 'allow' ? Pal.accent : Pal.chip)
+              .onClick(() => {
+                this.setPerAppMode('allow');
+              })
+          }
+          .margin({ top: 10 })
+          TextInput({ placeholder: '包名,逗号分隔，如 com.microsoft.emmx', text: this.perAppList })
+            .height(44)
+            .backgroundColor(Pal.chip)
+            .borderRadius(8)
+            .width('100%')
+            .margin({ top: 10 })
+            .onChange((v: string) => {
+              this.perAppList = v;
+            })
+          Button('保存名单')
+            .width('100%')
+            .height(42)
+            .fontColor('#FFFFFF')
+            .backgroundColor(Pal.accent)
+            .borderRadius(12)
+            .margin({ top: 10 })
+            .onClick(() => {
+              this.savePerAppList();
+            })
+        }
+        .width('100%')
+        .padding(14)
+        .borderRadius(16)
+        .backgroundColor(Pal.card)
+        .margin({ top: 12 })
+
+        Column() {
           Row() {
             Text('运行日志')
               .fontSize(15)
@@ -255,7 +342,7 @@ export struct MineTab {
               .fontSize(15)
               .fontColor(Pal.text)
               .layoutWeight(1)
-            Text('1.0.0 · 内核 ' + (coreVersion().length > 0 ? coreVersion() : '未加载') + ' ›')
+            Text('1.1.0 · 内核 ' + (coreVersion().length > 0 ? coreVersion() : '未加载') + ' ›')
               .fontSize(12)
               .fontColor(Pal.sub)
           }

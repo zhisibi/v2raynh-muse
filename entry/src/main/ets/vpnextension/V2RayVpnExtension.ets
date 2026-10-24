@@ -10,7 +10,7 @@ import { Want } from '@kit.AbilityKit';
 import { fileIo as fs } from '@kit.CoreFileKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { attachTunFd, startXray, stopXray, startTun, stopTun, lastError } from '../model/CoreBridge';
-import { protectProcessNetDyn } from './DynCompat';
+import { protectProcessNetDyn, setAllowedApplicationsDyn } from './DynCompat';
 import {
   CONFIG_FILE_NAME, TUN_ADDR_V4, TUN_PREFIX_V4, TUN_ADDR_V6, TUN_PREFIX_V6,
 } from '../model/XrayConfig';
@@ -18,8 +18,14 @@ import {
 const TAG = 'V2RayVpn';
 const DOMAIN = 0xff01;
 const STATUS_FILE = 'vpn_status.json';
+const PERAPP_FILE = 'vpn_perapp.json';
 const PARAM_MODE = 'v2rayng_mode';
 const MTU = 1500;
+
+interface PerAppFile {
+  mode: string;
+  list: string[];
+}
 
 interface VpnStatus {
   state: string;
@@ -52,8 +58,10 @@ export default class V2RayVpnExtension extends VpnExtensionAbility {
       const msg: string = e instanceof Error ? e.message : '未知错误';
       logError('启动失败: ' + msg);
       this.diag('失败 step=' + this.currentStep + ': ' + msg);
+      // 先拆隧道/核心（不写状态），最后写 error——否则 stopVpn 的 stopped 会把
+      // error 覆盖掉，UI 永远等不到失败状态（v1.1.0 修正）。
+      this.teardown();
       this.writeStatus('error', msg, this.currentStep);
-      this.stopVpn();
     });
   }
 
@@ -150,6 +158,28 @@ export default class V2RayVpnExtension extends VpnExtensionAbility {
       return;
     }
 
+    // 按应用代理（基础版）：读 ConnectManager 写的 vpn_perapp.json；
+    // 缺失/解析失败时保持 v1.0 行为（仅自身 blocked 防回环）。
+    let perAppMode: string = 'off';
+    let perAppBundles: string[] = [];
+    try {
+      const rawPer: string = fs.readTextSync(this.context.filesDir + '/' + PERAPP_FILE,
+        { encoding: 'utf-8' });
+      const parsedPer: PerAppFile = JSON.parse(rawPer) as PerAppFile;
+      perAppMode = parsedPer.mode;
+      perAppBundles = parsedPer.list;
+      this.diag('perapp mode=' + perAppMode + ' list=' + perAppBundles.length + ' 个');
+    } catch (e) {
+      // 无配置文件则默认 off
+    }
+    const selfBundle: string = this.context.applicationInfo.name;
+    let blockedApps: string[] = [selfBundle];
+    if (perAppMode === 'block') {
+      for (let i = 0; i < perAppBundles.length; i++) {
+        if (blockedApps.indexOf(perAppBundles[i]) < 0) blockedApps.push(perAppBundles[i]);
+      }
+    }
+
     // TUN 模式：VpnConfig 形态对齐澜舟真机验证版
     const vpnConfig: vpnExtension.VpnConfig = {
       mtu: MTU,
@@ -177,8 +207,16 @@ export default class V2RayVpnExtension extends VpnExtensionAbility {
       isIPv4Accepted: true,
       isIPv6Accepted: true,
       isBlocking: false,
-      blockedApplications: [this.context.applicationInfo.name],
+      blockedApplications: blockedApps,
     };
+    if (perAppMode === 'allow' && perAppBundles.length > 0) {
+      // allow 模式：仅名单内应用进隧道；自身不入名单，核心出站直连防回环。
+      // allowedApplications 不在 API 18 的 VpnConfig 类型定义中，经 DynCompat
+      // 动态写入；运行时不支持时 diag 留痕（此时退化为全量进隧道）。
+      const okAllow: boolean = setAllowedApplicationsDyn(vpnConfig, perAppBundles);
+      this.diag('perapp allow 动态写入 allowedApplications=' + okAllow);
+      vpnConfig.blockedApplications = [];
+    }
     this.step('tun-create');
     const connection: vpnExtension.VpnConnection = vpnExtension.createVpnConnection(this.context);
     let tunFd: number = -1;
@@ -210,8 +248,6 @@ export default class V2RayVpnExtension extends VpnExtensionAbility {
       throw new Error('内核启动失败: ' + lastError());
     }
 
-    // hev TUN->SOCKS：符号缺失/未编译时返回 false，记录但不中断——
-    // 核心已运行，系统代理（SOCKS 10808）可用，全局 TUN 待真机补齐 hev 后生效。
     // SOCKS 端口从配置 JSON 解析（扩展进程无 UI 的 Preferences 上下文，不能依赖 SettingsStore）
     let socksPort: number = 10808;
     try {
@@ -224,13 +260,20 @@ export default class V2RayVpnExtension extends VpnExtensionAbility {
     } catch (e) {
       // 用默认 10808
     }
+    // hev TUN->SOCKS：失败必须诚实报错（v1.0 时返回 false 仍报 running，
+    // TUN 里流量无处可去却显示已连接——v1.1.0 起直接抛错走 error 状态）。
+    this.step('tun-start');
     const tunOk: boolean = startTun(socksPort, MTU);
-    this.diag('startTun(hev) 返回 ' + tunOk + (tunOk ? '' : '（hev 未就绪，TUN 转发未生效）'));
-    this.writeStatus('running', tunOk ? '' : 'hev-unavailable', 'running');
-    this.diag('完成: Xray 核心运行中');
+    this.diag('startTun(hev) 返回 ' + tunOk);
+    if (!tunOk) {
+      throw new Error('TUN 转发启动失败：hev 未就绪（startTun=false），详见诊断日志');
+    }
+    this.writeStatus('running', '', 'running');
+    this.diag('完成: Xray 核心运行中，TUN 转发已启动');
   }
 
-  private stopVpn(): void {
+  /** 拆隧道与核心（不写状态文件），供 onDestroy 与启动失败路径共用 */
+  private teardown(): void {
     try {
       stopTun();
     } catch (e) {
@@ -248,6 +291,10 @@ export default class V2RayVpnExtension extends VpnExtensionAbility {
         // 忽略
       });
     }
+  }
+
+  private stopVpn(): void {
+    this.teardown();
     this.writeStatus('stopped', '', 'stopped');
     this.diag('VPN 已停止');
   }

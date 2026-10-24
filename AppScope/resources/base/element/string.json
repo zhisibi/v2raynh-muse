@@ -39,6 +39,10 @@
   {
    "name": "perm_pasteboard_reason",
    "value": "用于从剪贴板导入节点链接与导出备份/日志"
+  },
+  {
+   "name": "perm_camera_reason",
+   "value": "用于扫描节点二维码导入"
   }
  ]
 }

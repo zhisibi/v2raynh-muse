@@ -11,8 +11,9 @@
 #   OHOS_NDK_HOME=/path/to/sdk/default/openharmony/native ./scripts/build-ohos-core.sh
 #
 # 仿 ~/workspace/mihomo-lite-harmony/scripts/build-ohos-core.sh 的已验证流程，
-# 差异：内核换为 XTLS/Xray-core，桥在 core/xray-bridge（本仓库），
-# 导出符号 XrayStart/XrayStop/XrayVersion/XrayLastError/XrayPing。
+# 差异：内核换为 XTLS/Xray-core v26.10.21，桥在 core/xray-bridge（本仓库），
+# 导出符号 XrayStart/XrayStop/XrayVersion/XrayLastError/XrayPing/XrayTraffic。
+# v26.x 要求 Go 1.27，故工具链改用 sysit/ohos-go 的 ohos-1.27-base 分支自建。
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -31,40 +32,27 @@ if [[ ! -x "$OHOS_NDK_HOME/llvm/bin/aarch64-unknown-linux-ohos-clang" ]]; then
   exit 1
 fi
 
-# ---- 1. OpenHarmony Go fork（release-branch.go1.24，镜像兜底） ----
-GO_FORK_URL="${GO_FORK_URL:-https://gitcode.com/openharmony-sig/ohos_golang_go.git}"
-GO_FORK_BRANCH="${GO_FORK_BRANCH:-release-branch.go1.24}"
-GO_FORK_MIRROR_URL="https://github.com/sysit/ohos-go.git"
-GO_FORK_MIRROR_BRANCH="release-branch.go1.26"
-if [[ ! -x "$WORK/go-ohos/bin/go" ]]; then
-  echo "==> 获取 OpenHarmony Go fork…"
-  if [[ -d "$WORK/go-src/.git" ]]; then
-    echo "    复用已有 $WORK/go-src"
-  elif ! timeout 60 git clone --depth 1 -b "$GO_FORK_BRANCH" "$GO_FORK_URL" "$WORK/go-src" 2>/dev/null; then
-    echo "    主源不可达，改用 GitHub 镜像 $GO_FORK_MIRROR_URL ($GO_FORK_MIRROR_BRANCH)"
-    rm -rf "$WORK/go-src"
-    git clone --depth 1 -b "$GO_FORK_MIRROR_BRANCH" "$GO_FORK_MIRROR_URL" "$WORK/go-src"
+# ---- 1. OpenHarmony Go 1.27 工具链（Xray-core v26.x 的 go.mod 要求 Go 1.27） ----
+# 来源：sysit/ohos-go 分支 ohos-1.27-base。构建产物就放在 $WORK/go127-src
+# 本身（make.bash 原地构建），已存在 bin/go 时直接复用。
+if [[ ! -x "$WORK/go127-src/bin/go" ]]; then
+  if [[ ! -d "$WORK/go127-src/.git" ]]; then
+    echo "==> 克隆 ohos-go (ohos-1.27-base)…"
+    git clone --depth 1 -b ohos-1.27-base https://github.com/sysit/ohos-go.git "$WORK/go127-src"
   fi
-  echo "==> 编译 Go 工具链（约需数分钟）…"
+  echo "==> 编译 Go 1.27 工具链（约需数分钟）…"
   if [[ -z "${GOROOT_BOOTSTRAP:-}" ]]; then
     if command -v go >/dev/null 2>&1; then
       export GOROOT_BOOTSTRAP="$(go env GOROOT)"
     else
-      echo "    下载宿主 Go（bootstrap 用）…"
-      mkdir -p "$WORK/host-go"
-      if [[ ! -x "$WORK/host-go/go/bin/go" ]]; then
-        curl -sL -o "$WORK/go-host.tar.gz" https://go.dev/dl/go1.24.6.linux-amd64.tar.gz
-        tar -xzf "$WORK/go-host.tar.gz" -C "$WORK/host-go"
-      fi
-      export GOROOT_BOOTSTRAP="$WORK/host-go/go"
+      echo "!! 需要宿主 Go 作 GOROOT_BOOTSTRAP（>= 1.22），未找到"
+      exit 1
     fi
   fi
   export GOTOOLCHAIN=local
-  (cd "$WORK/go-src/src" && bash ./make.bash)
-  mkdir -p "$WORK/go-ohos"
-  cp -r "$WORK/go-src"/* "$WORK/go-ohos"/
+  (cd "$WORK/go127-src/src" && bash ./make.bash)
 fi
-export GOROOT="$WORK/go-ohos"
+export GOROOT="$WORK/go127-src"
 export PATH="$GOROOT/bin:$PATH"
 go version
 

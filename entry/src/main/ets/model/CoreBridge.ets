@@ -66,7 +66,7 @@ export function lastError(): string {
   }
 }
 
-/** 返回 {"up":累计上行字节,"down":累计下行字节} JSON（不可用时 {}） */
+/** 返回 {"up","down","upTotal","downTotal",...} 累计字节 JSON（桥给累计值，速率由 UI 差分；不可用时 {}） */
 export function queryTraffic(): string {
   try {
     return String(nativeCore.queryTraffic());

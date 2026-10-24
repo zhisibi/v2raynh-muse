@@ -1,6 +1,6 @@
-// v2rayNG Harmony · 日志页：查看/清空/导出（复制剪贴板 + 落盘路径提示）
-// TODO：导出亦可走系统保存/分享（picker/ShareKit），真机迭代时补；现版本剪贴板+落盘已可回传定位。
+// v2rayNG Harmony · 日志页：查看/清空/导出（复制剪贴板 + 系统保存到文件 + 落盘）
 import { router } from '@kit.ArkUI';
+import { picker, fileIo as fs } from '@kit.CoreFileKit';
 import { LogStore, LogLine } from '../model/LogStore';
 import { Pal, copyToClipboard } from '../components/Ui';
 
@@ -31,6 +31,37 @@ struct LogsPage {
     }
   }
 
+  /** 保存到文件：系统 DocumentViewPicker 选保存位置后写入完整日志文本 */
+  async saveLogsToFile(): Promise<void> {
+    try {
+      const saveOptions: picker.DocumentSaveOptions = new picker.DocumentSaveOptions();
+      const d: Date = new Date();
+      const p = (n: number): string => (n < 10 ? '0' + n : '' + n);
+      saveOptions.newFileNames = ['v2rayng-log-' + d.getFullYear() + p(d.getMonth() + 1) +
+        p(d.getDate()) + '-' + p(d.getHours()) + p(d.getMinutes()) + '.txt'];
+      const docPicker: picker.DocumentViewPicker =
+        new picker.DocumentViewPicker(getContext(this));
+      const uris: Array<string> = await docPicker.save(saveOptions);
+      if (uris.length === 0) {
+        this.msg = '已取消保存';
+        return;
+      }
+      const text: string = LogStore.exportText();
+      const file: fs.File = fs.openSync(uris[0],
+        fs.OpenMode.READ_WRITE | fs.OpenMode.CREATE | fs.OpenMode.TRUNC);
+      try {
+        fs.writeSync(file.fd, text);
+      } finally {
+        fs.closeSync(file);
+      }
+      this.msg = '日志已保存（' + text.length + ' 字符）';
+      LogStore.push('日志', '已保存到文件: ' + uris[0]);
+    } catch (e) {
+      this.msg = '保存失败，请改用导出（剪贴板）';
+      LogStore.push('日志', '保存到文件失败: ' + (e instanceof Error ? e.message : String(e)));
+    }
+  }
+
   build() {
     Column() {
       Row() {
@@ -54,6 +85,16 @@ struct LogsPage {
           .backgroundColor(Pal.accent)
           .onClick(() => {
             this.exportLogs();
+          })
+        Text('存文件')
+          .fontSize(13)
+          .fontColor(Pal.accent)
+          .padding({ left: 12, right: 12, top: 6, bottom: 6 })
+          .borderRadius(15)
+          .backgroundColor(Pal.accentSoft)
+          .margin({ left: 8 })
+          .onClick(() => {
+            this.saveLogsToFile();
           })
         Text('清空')
           .fontSize(13)

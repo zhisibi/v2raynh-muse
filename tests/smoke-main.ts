@@ -154,6 +154,39 @@ const hyStream: Record<string, Object> = hyOuts[0]['streamSettings'] as Object a
 const hySet2: Record<string, Object> = hyStream['hysteriaSettings'] as Object as Record<string, Object>;
 assert(Number(hySet2['version']) === 2, 'xray hy2 version=2');
 
+// TUN 模式 DNS 出站与规则（v1.1.0）：默认 settings.tunEnabled=true
+{
+  const outTags: string[] = outbounds.map((o: Record<string, Object>) => String(o['tag']));
+  assert(outTags.indexOf('dns') >= 0, 'tun 模式含 dns 出站');
+  const dnsOut: Record<string, Object> = outbounds[outTags.indexOf('dns')];
+  assert(String(dnsOut['protocol']) === 'dns', 'dns 出站协议 dns');
+  const routing: Record<string, Object> = cfg['routing'] as Object as Record<string, Object>;
+  const rules: Array<Record<string, Object>> = routing['rules'] as Object as Array<Record<string, Object>>;
+  const r0: Record<string, Object> = rules[0];
+  assert(String(r0['outboundTag']) === 'dns' && String(r0['network']) === 'udp' &&
+    String(r0['port']) === '53', 'tun dns 规则 udp/53->dns');
+  const inTag: Object[] = r0['inboundTag'] as Object as Object[];
+  assert(inTag.length === 1 && String(inTag[0]) === 'socks', 'tun dns 规则 inboundTag=socks');
+  // stats/policy（流量统计前置）
+  assert(cfg['stats'] !== undefined, 'xray 含 stats');
+  const policy: Record<string, Object> = cfg['policy'] as Object as Record<string, Object>;
+  const sys: Record<string, Object> = policy['system'] as Object as Record<string, Object>;
+  assert(Boolean(sys['statsOutboundUplink']) === true && Boolean(sys['statsOutboundDownlink']) === true,
+    'policy system 流量统计开');
+}
+// 仅代理模式（tunEnabled=false）不加 dns 出站/规则
+{
+  const pSettings: AppSettings = defaultSettings();
+  pSettings.tunEnabled = false;
+  const pCfg: Record<string, Object> = JSON.parse(buildXrayConfig(vl, pSettings)) as Record<string, Object>;
+  const pOuts: Array<Record<string, Object>> = pCfg['outbounds'] as Object as Array<Record<string, Object>>;
+  const pTags: string[] = pOuts.map((o: Record<string, Object>) => String(o['tag']));
+  assert(pTags.indexOf('dns') < 0, '仅代理模式无 dns 出站（dns-out 保留）');
+  const pRouting: Record<string, Object> = pCfg['routing'] as Object as Record<string, Object>;
+  const pRules: Array<Record<string, Object>> = pRouting['rules'] as Object as Array<Record<string, Object>>;
+  assert(String(pRules[0]['outboundTag']) === 'dns-out', '仅代理模式首条规则为 dns-out');
+}
+
 // 全局模式
 const gSettings: AppSettings = defaultSettings();
 gSettings.routingMode = 'global';

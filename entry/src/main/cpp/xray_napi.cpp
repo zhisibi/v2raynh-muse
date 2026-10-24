@@ -304,8 +304,12 @@ static napi_value StartTun(napi_env env, napi_callback_info info) {
         return makeBool(env, false);
     }
     char yaml[1024];
+    // 字段与上游 conf/main.yml 及安卓 v2rayNG 生成的 hev 配置对齐：
+    // tunnel.name（外部 fd 时仅占位）、mtu、ipv4/ipv6 与 VpnConfig 的 TUN 地址一致；
+    // socks5 指向 Xray 的 socks 入站（udp 走 udp 关联）。
     std::snprintf(yaml, sizeof(yaml),
                   "tunnel:\n"
+                  "  name: tun0\n"
                   "  mtu: %d\n"
                   "  ipv4: 172.19.0.1\n"
                   "  ipv6: 'fdfe:dcba:9876::1'\n"

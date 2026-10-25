@@ -36,6 +36,9 @@ var (
 	instance      *core.Instance
 	runningConfig string // XrayStart 成功时的配置原文（XrayPing 解析运行实例入站端口用）
 	lastErr       string
+	// pingMu 串行化 XrayPing 的临时实例路径：临时实例抢占固定测试端口，
+	// 并发 ping 会互相冲突，必须整段串行（v1.2.1）。
+	pingMu sync.Mutex
 )
 
 func setErr(err error) {
@@ -217,17 +220,25 @@ func measureViaHTTPProxy(httpPort int, target string, timeout time.Duration) int
 // XrayPing 真实延迟测试（对照 Android v2rayNG 的测速思路：经核心入站实测）。
 //
 // 路径二选一（按运行状态自动选择）：
-//   - 已有实例在运行：临时实例会与运行实例抢占相同的入站端口（10808/10809）
-//     必然冲突，故直接经运行实例的 HTTP 入站测速——此时测得的是当前连接
-//     节点的延迟（传入 config 仅用于解析端口，端口与运行配置不一致时以运行
-//     配置为准）。
-//   - 无实例运行：用传入 config 起一个临时实例，经其 HTTP 入站测速后立即
-//     关闭临时实例，不影响后续正常连接。
+//   - 已有实例在运行（扩展进程的节点探针走这条）：临时实例会与运行实例
+//     抢占相同的入站端口必然冲突，故直接经运行实例的 HTTP 入站测速——
+//     此时测得的是当前连接节点的延迟（传入 config 仅用于解析端口，端口与
+//     运行配置不一致时以运行配置为准）。
+//   - 无实例运行（UI 进程的节点测速走这条；UI 与扩展不在同一进程，UI 侧
+//     永远无实例）：用传入 config 起一个临时实例，经其 HTTP 入站测速后
+//     立即关闭。调用方必须传测速专用配置（XrayConfig.buildXrayTestConfig，
+//     测试端口 18088/18089，与正式入站 10808/10809 分离）+ assetDir——
+//     v1.2.1 前临时实例没设 XRAY_LOCATION_ASSET，规则模式的 geo 规则加载
+//     失败导致测速恒 -1。
 //
-// 返回毫秒；失败返回 -1（ArkTS 侧收到 -1 回退 TCP 直连）。
+// assetDir 非空时在 LoadConfig 前 Setenv XRAY_LOCATION_ASSET/CONFIG、
+// MkdirAll，并对 cfg 先过 rewriteLogConfig（失败原因同步落 xray_error.log
+// 便于回传判读，v1.1.2 起正式启动路径同款处理）。
+// 临时实例路径由 pingMu 整段串行化：并发 ping 会抢同一测试端口。
+// 返回毫秒；失败返回 -1，原因写 lastErr（XrayLastError 回传 UI 显示）。
 //
 //export XrayPing
-func XrayPing(configJSON *C.char, urlStr *C.char, timeoutMs C.int) C.int {
+func XrayPing(configJSON *C.char, urlStr *C.char, timeoutMs C.int, assetDir *C.char) C.int {
 	target := C.GoString(urlStr)
 	if target == "" {
 		target = "http://www.gstatic.com/generate_204"
@@ -241,11 +252,36 @@ func XrayPing(configJSON *C.char, urlStr *C.char, timeoutMs C.int) C.int {
 	running, runCfg := snapshotInstance()
 	if running != nil {
 		port := httpInboundPort(runCfg)
-		return C.int(measureViaHTTPProxy(port, target, timeout))
+		ms := measureViaHTTPProxy(port, target, timeout)
+		if ms < 0 {
+			setErrText(fmt.Sprintf("XrayPing 经运行实例 HTTP 入站 127.0.0.1:%d 测速失败: %s 无响应或超时", port, target))
+		}
+		return C.int(ms)
+	}
+
+	// 临时实例路径：整段串行（等锁期间正式实例可能已启动，取锁后复查一次）
+	pingMu.Lock()
+	defer pingMu.Unlock()
+	if running2, runCfg2 := snapshotInstance(); running2 != nil {
+		port := httpInboundPort(runCfg2)
+		ms := measureViaHTTPProxy(port, target, timeout)
+		if ms < 0 {
+			setErrText(fmt.Sprintf("XrayPing 经运行实例 HTTP 入站 127.0.0.1:%d 测速失败: %s 无响应或超时", port, target))
+		}
+		return C.int(ms)
 	}
 
 	if strings.TrimSpace(cfg) == "" {
+		setErrText("XrayPing: empty config")
 		return -1
+	}
+	asset := C.GoString(assetDir)
+	if asset != "" {
+		_ = os.Setenv("XRAY_LOCATION_ASSET", asset)
+		_ = os.Setenv("XRAY_LOCATION_CONFIG", asset)
+		_ = os.MkdirAll(filepath.Clean(asset), 0o755)
+		// 与 XrayStart 同款：loglevel 提升 + error 落盘 xray_error.log
+		cfg = rewriteLogConfig(cfg, asset)
 	}
 	loaded, err := core.LoadConfig("json", bytes.NewReader([]byte(cfg)))
 	if err != nil {
@@ -263,7 +299,11 @@ func XrayPing(configJSON *C.char, urlStr *C.char, timeoutMs C.int) C.int {
 	}
 	defer func() { _ = inst.Close() }()
 	port := httpInboundPort(cfg)
-	return C.int(measureViaHTTPProxy(port, target, timeout))
+	ms := measureViaHTTPProxy(port, target, timeout)
+	if ms < 0 {
+		setErrText(fmt.Sprintf("XrayPing 经临时实例 HTTP 入站 127.0.0.1:%d 测速失败: %s 无响应或超时（节点不可达或协议握手失败，细节看 xray_error.log）", port, target))
+	}
+	return C.int(ms)
 }
 
 // XrayTraffic 读取运行实例的 stats 计数器，返回 JSON：

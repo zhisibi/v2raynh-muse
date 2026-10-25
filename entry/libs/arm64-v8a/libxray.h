@@ -91,7 +91,7 @@ extern int XrayStart(char* configJSON, char* assetDir);
 extern void XrayStop(void);
 extern char* XrayVersion(void);
 extern char* XrayLastError(void);
-extern int XrayPing(char* configJSON, char* urlStr, int timeoutMs);
+extern int XrayPing(char* configJSON, char* urlStr, int timeoutMs, char* assetDir);
 extern char* XrayTraffic(void);
 extern void XrayFreeCString(char* p);
 

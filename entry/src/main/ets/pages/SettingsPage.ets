@@ -339,7 +339,7 @@ struct SettingsPage {
           if (this.msg.length > 0) {
             Text(this.msg).fontSize(12).fontColor(Pal.accent).margin({ top: 12 });
           }
-          Text('v2rayNG Harmony 1.2.0 (104)').fontSize(11).fontColor(Pal.sub)
+          Text('v2rayNG Harmony 1.2.1 (105)').fontSize(11).fontColor(Pal.sub)
             .margin({ top: 14, bottom: 20 });
         }
         .width('100%').alignItems(HorizontalAlign.Start)

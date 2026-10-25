@@ -9,6 +9,7 @@ import { VpnService } from './VpnService';
 import { ensureAssets } from '../model/AssetInstaller';
 
 const STATUS_FILE = 'vpn_status.json';
+const TRAFFIC_FILE = 'vpn_traffic.json';
 export const PERAPP_FILE_NAME = 'vpn_perapp.json';
 
 /** vpn_perapp.json 结构（扩展进程读取，UI 进程 Preferences 它读不到） */
@@ -21,6 +22,21 @@ export interface VpnStatus {
   state: string;
   error: string;
   step: string;
+}
+
+/**
+ * vpn_traffic.json 流量快照（v1.2.1）：扩展进程每 2 秒写入，UI 进程读取展示。
+ * up/down = proxy + direct 合计；error 非空表示扩展侧采样失败（如 no-instance）。
+ */
+export interface TrafficSnapshot {
+  ts: number;
+  up: number;
+  down: number;
+  proxyUp: number;
+  proxyDown: number;
+  directUp: number;
+  directDown: number;
+  error: string;
 }
 
 interface FilesDirHolder {
@@ -130,6 +146,11 @@ export class ConnectManager {
       // 不存在则忽略
     }
     try {
+      fs.unlinkSync(filesDir() + '/' + TRAFFIC_FILE);
+    } catch (e) {
+      // 不存在则忽略
+    }
+    try {
       fs.unlinkSync(filesDir() + '/vpn_diag.txt');
     } catch (e) {
       // 不存在则忽略
@@ -173,6 +194,27 @@ export class ConnectManager {
     if (st.state === 'error') return 'error';
     if (st.state === 'stopped') return 'stopped';
     return 'unknown';
+  }
+
+  /** 读扩展进程上报的最新流量快照；文件缺失/解析失败返回 undefined */
+  static readTraffic(): TrafficSnapshot | undefined {
+    try {
+      const raw: string = fs.readTextSync(filesDir() + '/' + TRAFFIC_FILE, { encoding: 'utf-8' });
+      const o: Record<string, Object> = JSON.parse(raw) as Record<string, Object>;
+      const snap: TrafficSnapshot = {
+        ts: Number(o['ts'] ?? 0),
+        up: Number(o['up'] ?? 0),
+        down: Number(o['down'] ?? 0),
+        proxyUp: Number(o['proxyUp'] ?? 0),
+        proxyDown: Number(o['proxyDown'] ?? 0),
+        directUp: Number(o['directUp'] ?? 0),
+        directDown: Number(o['directDown'] ?? 0),
+        error: String(o['error'] ?? ''),
+      };
+      return snap;
+    } catch (e) {
+      return undefined;
+    }
   }
 
   static lastError(): string {

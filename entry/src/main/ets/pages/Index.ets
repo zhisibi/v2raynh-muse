@@ -5,12 +5,13 @@ import { scanBarcode, scanCore } from '@kit.ScanKit';
 import { ServerStore, ServerEntry } from '../model/ServerStore';
 import { Subscription, SubscriptionManager } from '../model/SubscriptionManager';
 import { parseSubscriptionText, parseUriList, toUri } from '../model/UriParser';
-import { ConnectManager } from '../service/ConnectManager';
+import { ConnectManager, TrafficSnapshot } from '../service/ConnectManager';
 import { SettingsStore } from '../model/SettingsStore';
-import { buildXrayConfig } from '../model/XrayConfig';
-import { isRunning, queryTraffic, testDelay } from '../model/CoreBridge';
+import { buildXrayTestConfig } from '../model/XrayConfig';
+import { testDelay, lastError } from '../model/CoreBridge';
+import { ensureAssets, assetDirPath } from '../model/AssetInstaller';
 import { LogStore } from '../model/LogStore';
-import { Pal, copyToClipboard, fmtBytes, readClipboard, tcpPing } from '../components/Ui';
+import { Pal, copyToClipboard, fmtBytes, readClipboard } from '../components/Ui';
 
 interface GroupTab {
   key: string;
@@ -57,7 +58,10 @@ struct Index {
   @State importText: string = '';
   @State testing: boolean = false;
   @State testProgress: string = '';
+  @State testingId: string = '';
   private testCancel: boolean = false;
+  private testingOne: boolean = false;
+  private lastTestError: string = '';
   // 连接状态
   @State status: string = 'idle';
   @State busy: boolean = false;
@@ -66,7 +70,16 @@ struct Index {
   @State msg: string = '';
   @State upTotal: number = 0;
   @State downTotal: number = 0;
+  @State upRate: number = 0;
+  @State downRate: number = 0;
   private timer: number = -1;
+  private prevStatus: string = 'idle';
+  // 流量速率差分（上一帧快照；prevUp<0 表示无上一帧）
+  private prevUp: number = -1;
+  private prevDown: number = -1;
+  private prevTs: number = 0;
+  private trafficMissTicks: number = 0;
+  private trafficMissLogged: boolean = false;
 
   aboutToAppear(): void {
     this.refreshSel();
@@ -89,18 +102,68 @@ struct Index {
   }
 
   private tick(): void {
-    this.status = ConnectManager.status();
+    const newStatus: string = ConnectManager.status();
+    // 进入 error 且当前无文案时，把扩展写入的失败原因带到界面上（仅状态变化时设一次）
+    if (newStatus === 'error' && this.prevStatus !== 'error' && this.msg.length === 0) {
+      const err: string = ConnectManager.lastError();
+      if (err.length > 0) this.msg = '连接失败：' + err;
+    }
+    this.prevStatus = newStatus;
+    this.status = newStatus;
     this.refreshSel();
     if (this.status === 'running') {
-      const raw: string = queryTraffic();
-      if (raw.length > 0) {
-        try {
-          const o: Record<string, Object> = JSON.parse(raw) as Record<string, Object>;
-          this.upTotal = Number(o['upTotal'] ?? 0);
-          this.downTotal = Number(o['downTotal'] ?? 0);
-        } catch (e) {
-          // 忽略单帧解析失败
+      this.tickTraffic();
+    } else {
+      // 非运行状态：速率归 0、差分基准与缺失计数复位（总量保留不清）
+      this.upRate = 0;
+      this.downRate = 0;
+      this.prevUp = -1;
+      this.prevDown = -1;
+      this.prevTs = 0;
+      this.trafficMissTicks = 0;
+      this.trafficMissLogged = false;
+    }
+  }
+
+  /**
+   * 流量显示（v1.2.1）：读扩展进程每 2 秒写盘的 vpn_traffic.json 快照。
+   * v1.2.0 在 UI 进程直接调 native queryTraffic()，查的是本进程不存在的
+   * 实例，恒 no-instance、数字永远不动——跨进程只能走文件。
+   */
+  private tickTraffic(): void {
+    const snap: TrafficSnapshot | undefined = ConnectManager.readTraffic();
+    const now: number = Date.now();
+    if (snap !== undefined && now - snap.ts <= 6000) {
+      this.trafficMissTicks = 0;
+      this.upTotal = snap.up;
+      this.downTotal = snap.down;
+      if (this.prevUp >= 0 && this.prevTs > 0) {
+        const dt: number = (now - this.prevTs) / 1000;
+        if (dt > 0) {
+          this.upRate = Math.max(0, Math.round((snap.up - this.prevUp) / dt));
+          this.downRate = Math.max(0, Math.round((snap.down - this.prevDown) / dt));
+        } else {
+          this.upRate = 0;
+          this.downRate = 0;
         }
+      } else {
+        this.upRate = 0;
+        this.downRate = 0;
+      }
+      this.prevUp = snap.up;
+      this.prevDown = snap.down;
+      this.prevTs = now;
+    } else {
+      // 快照缺失/过期：速率归 0、差分基准清空；连续 5 个 tick 记一次日志（不打扰界面）
+      this.upRate = 0;
+      this.downRate = 0;
+      this.prevUp = -1;
+      this.prevDown = -1;
+      this.prevTs = 0;
+      this.trafficMissTicks++;
+      if (this.trafficMissTicks >= 5 && !this.trafficMissLogged) {
+        this.trafficMissLogged = true;
+        LogStore.push('流量', '扩展未上报流量快照');
       }
     }
   }
@@ -206,38 +269,40 @@ struct Index {
     }
   }
 
-  /** 底部「测试」：对运行实例做真实延迟测试，未运行则测选中节点端口连通性 */
+  /**
+   * 节点真实测速（v1.2.1）：测速专用配置（测试端口 18088/18089）+ 资产目录，
+   * 经本进程临时 Xray 实例实测出站延迟。v1.2.0 的实现被 UI 进程 isRunning()
+   * 恒 false 挡住，永远走 TCP 握手兜底——UDP 类协议必然失败、数值也不准，
+   * 已彻底删除兜底。失败时原因取 lastError() 并记日志。
+   */
+  private async testNodeReal(e: ServerEntry): Promise<number> {
+    await ensureAssets();
+    const s = SettingsStore.get();
+    const cfg: string = buildXrayTestConfig(e.profile, s);
+    const ms: number = testDelay(cfg, 'http://www.gstatic.com/generate_204', 6000, assetDirPath());
+    if (ms < 0) {
+      this.lastTestError = lastError();
+      LogStore.push('测速', e.profile.remarks + ' 失败: ' +
+        (this.lastTestError.length > 0 ? this.lastTestError : '核心无响应'));
+    }
+    return ms;
+  }
+
+  /** 底部「测试」：对选中节点做真实延迟测试（临时实例实测出站） */
   async doTest(): Promise<void> {
     const sel = ServerStore.getSelected();
     if (sel === undefined) {
       this.msg = '请先选择节点';
       return;
     }
-    if (this.status === 'running' && isRunning()) {
-      const s = SettingsStore.get();
-      const cfg: string = buildXrayConfig(sel.profile, s);
-      const ms: number = testDelay(cfg, 'http://www.gstatic.com/generate_204', 10000);
-      if (ms >= 0) {
-        this.msg = '代理延迟 ' + ms + ' ms（真实出站测试）';
-        promptAction.showToast({ message: '延迟 ' + ms + ' ms' });
-        return;
+    await this.testOne(sel);
+    const entries: ServerEntry[] = ServerStore.getEntries();
+    for (let i = 0; i < entries.length; i++) {
+      if (entries[i].id === sel.id && entries[i].delay >= 0) {
+        promptAction.showToast({ message: '延迟 ' + entries[i].delay + ' ms' });
+        break;
       }
     }
-    const port: number = Number(sel.profile.serverPort);
-    if (isNaN(port) || port <= 0) {
-      this.msg = '该节点无可用端口可测';
-      return;
-    }
-    this.msg = '正在测速 ' + sel.profile.remarks + '…';
-    const ms: number = await tcpPing(sel.profile.server, port, 3000);
-    if (ms >= 0) {
-      this.msg = 'TCP 延迟 ' + ms + ' ms（未连接核心时的端口连通性）';
-      ServerStore.setDelay(sel.id, ms);
-    } else {
-      this.msg = '测速超时（端口不可达或核心未运行）';
-      ServerStore.setDelay(sel.id, -2);
-    }
-    this.rev++;
   }
 
   // ---------- 列表操作 ----------
@@ -249,31 +314,28 @@ struct Index {
   }
 
   async testOne(e: ServerEntry): Promise<void> {
-    if (isRunning()) {
-      const s = SettingsStore.get();
-      const cfg: string = buildXrayConfig(e.profile, s);
-      const ms: number = testDelay(cfg, 'http://www.gstatic.com/generate_204', 10000);
+    if (this.testingOne) {
+      this.msg = '正在测速中，请稍候';
+      return;
+    }
+    this.testingOne = true;
+    this.testingId = e.id;
+    this.msg = '正在测速 ' + e.profile.remarks + '（真实延迟）…';
+    try {
+      const ms: number = await this.testNodeReal(e);
       if (ms >= 0) {
         ServerStore.setDelay(e.id, ms);
         this.msg = e.profile.remarks + ' 真实延迟 ' + ms + ' ms';
-        this.rev++;
-        return;
+      } else {
+        ServerStore.setDelay(e.id, -2);
+        this.msg = e.profile.remarks + ' 测速失败' +
+          (this.lastTestError.length > 0 ? '：' + this.lastTestError : '（核心无响应）');
       }
+    } finally {
+      this.testingOne = false;
+      this.testingId = '';
+      this.rev++;
     }
-    const port: number = Number(e.profile.serverPort);
-    if (isNaN(port) || port <= 0) {
-      this.msg = '该节点无可用端口（CUSTOM）';
-      return;
-    }
-    const ms: number = await tcpPing(e.profile.server, port, 3000);
-    if (ms >= 0) {
-      ServerStore.setDelay(e.id, ms);
-      this.msg = e.profile.remarks + ' TCP 延迟 ' + ms + ' ms';
-    } else {
-      ServerStore.setDelay(e.id, -2);
-      this.msg = e.profile.remarks + ' 测速超时';
-    }
-    this.rev++;
   }
 
   async testAll(): Promise<void> {
@@ -281,42 +343,45 @@ struct Index {
       this.testCancel = true;
       return;
     }
+    if (this.testingOne) {
+      this.msg = '正在测速中，请稍候';
+      return;
+    }
     const list: ServerEntry[] = this.visible();
     if (list.length === 0) {
       this.msg = '当前分组没有节点';
       return;
     }
-    const viaCore: boolean = isRunning();
     this.testing = true;
     this.testCancel = false;
     let okCount: number = 0;
+    let failCount: number = 0;
+    let doneCount: number = 0;
     for (let i = 0; i < list.length; i++) {
-      if (this.testCancel) {
-        this.testProgress = '测速已取消（' + i + '/' + list.length + '）';
-        break;
-      }
+      if (this.testCancel) break;
       const e: ServerEntry = list[i];
-      this.testProgress = '测速中 ' + (i + 1) + '/' + list.length + '：' + e.profile.remarks;
-      let ms: number = -2;
-      if (viaCore) {
-        const s = SettingsStore.get();
-        const cfg: string = buildXrayConfig(e.profile, s);
-        ms = testDelay(cfg, 'http://www.gstatic.com/generate_204', 10000);
+      this.testProgress = '真实延迟测速 ' + (i + 1) + '/' + list.length + '：' + e.profile.remarks +
+        '（成功 ' + okCount + ' / 失败 ' + failCount + '）';
+      this.testingId = e.id;
+      const ms: number = await this.testNodeReal(e);
+      ServerStore.setDelay(e.id, ms >= 0 ? ms : -2);
+      if (ms >= 0) {
+        okCount++;
       } else {
-        const port: number = Number(e.profile.serverPort);
-        if (!isNaN(port) && port > 0) {
-          ms = await tcpPing(e.profile.server, port, 3000);
-        }
+        failCount++;
       }
-      ServerStore.setDelay(e.id, ms);
-      if (ms >= 0) okCount++;
+      doneCount++;
       this.rev++;
     }
+    this.testingId = '';
     this.testing = false;
-    if (!this.testCancel) {
+    if (this.testCancel) {
+      this.testProgress = '测速已取消（完成 ' + doneCount + '/' + list.length +
+        '，成功 ' + okCount + ' / 失败 ' + failCount + '）';
+      this.msg = '测速已取消：成功 ' + okCount + '，失败 ' + failCount;
+    } else {
       this.testProgress = '';
-      this.msg = '全部测速完成：' + okCount + '/' + list.length + ' 可达' +
-        (viaCore ? '（核心真实延迟）' : '（TCP 端口连通性）');
+      this.msg = '全部测速完成：共 ' + list.length + ' 个，成功 ' + okCount + '，失败 ' + failCount + '（真实延迟）';
     }
   }
 
@@ -488,8 +553,9 @@ struct Index {
           .fontSize(12).fontColor(Pal.sub).maxLines(1).margin({ top: 2 });
       }
       .layoutWeight(1).alignItems(HorizontalAlign.Start);
-      Text(this.delayText(e.delay))
-        .fontSize(13).fontColor(this.delayColor(e.delay))
+      Text(this.testingId === e.id ? '测速中…' : this.delayText(e.delay))
+        .fontSize(13)
+        .fontColor(this.testingId === e.id ? Pal.accent : this.delayColor(e.delay))
         .margin({ right: 6 });
       Text('⋮').fontSize(18).fontColor(Pal.sub)
         .padding({ left: 8, right: 2, top: 6, bottom: 6 })
@@ -619,8 +685,9 @@ struct Index {
           Text(this.selProto.length > 0 ? this.selProto : this.statusLabel())
             .fontSize(11).fontColor(Pal.sub).maxLines(1).margin({ top: 2 });
           if (this.status === 'running') {
-            Text('↑ ' + fmtBytes(this.upTotal) + '  ↓ ' + fmtBytes(this.downTotal))
-              .fontSize(11).fontColor(Pal.sub).margin({ top: 2 });
+            Text('↑ ' + fmtBytes(this.upTotal) + ' · ' + fmtBytes(this.upRate) + '/s' +
+              '  ↓ ' + fmtBytes(this.downTotal) + ' · ' + fmtBytes(this.downRate) + '/s')
+              .fontSize(11).fontColor(Pal.sub).margin({ top: 2 }).maxLines(1);
           }
         }
         .layoutWeight(1).alignItems(HorizontalAlign.Start)

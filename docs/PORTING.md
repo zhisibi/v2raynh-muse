@@ -111,3 +111,14 @@
 | 连接通知 | `service/ConnectManager` | connect 成功后 NotificationKit publish 基础通知（id 1001，标题「v2rayNG 已连接」+节点名），disconnect 时 cancel；失败静默，未加额外权限声明 |
 | 主题/自动连接 | `model/SettingsStore.applyColorMode` + `entryability/EntryAbility` | themeMode 存设置，onCreate 按之 setColorMode；autoConnect 开且有选中节点时 loadContent 后自动 connect，失败只记日志 |
 | 策略组/代理链、root 模式、QS 磁贴/小部件、Tasker、完整 i18n、WebDAV | 未移植 | 鸿蒙无对应机制或超出基础对齐范围，如实记录 |
+
+## v1.2.1 修复对照
+
+v1.2.0 真机暴露两个跨进程缺陷，根因都是「Xray 实例在 VPN 扩展进程、UI 进程无实例」：
+
+| 缺陷 | 根因 | 鸿蒙实现 |
+|---|---|---|
+| 底部流量不动 | UI 进程 native `queryTraffic()` 查本进程空实例，恒 `no-instance` | `vpnextension/V2RayVpnExtension` 连接成功后采样（立即+每 2s）写 `vpn_traffic.json`（proxy/direct 分开记、up/down 合计、TRUNC 写入、raw 带 error 时附 error 字段）；`service/ConnectManager.readTraffic()` 读快照，连接前 unlink 旧文件；`pages/Index.tickTraffic()` 6 秒新鲜度窗口 + 差分速率 + 连续 5 tick 无新鲜快照记一次日志；停止时扩展补写最终采样 |
+| 节点测速无效 | UI 侧被本进程 `isRunning()` 恒 false 挡住永远走 TCP 握手兜底；XrayPing 临时实例缺 `XRAY_LOCATION_ASSET`、测试端口与正式端口相同 | `model/XrayConfig.buildXrayTestConfig()`（内部 `buildConfigWithPorts` 加端口覆盖：18088/18089 + 非 TUN 生成，CUSTOM 直通不变）；`testDelay` 全链路 4 参（`model/CoreBridge` → `cpp/xray_napi.cpp` argc=4 → Go `XrayPing(..., assetDir)`）；Go 桥临时实例 LoadConfig 前 Setenv + `rewriteLogConfig`、`pingMu` 整段串行、失败 `setErrText` 写明经哪个 HTTP 入站测速失败；Index 删除 TCP 兜底，`testNodeReal()` 统一入口（ensureAssets→测速配置→6000ms→失败取 lastError 记日志），行内「测速中…」+ 防重入 + 全部测速成功/失败计数；扩展节点探针同步补第 4 参 `assetDir()`（走运行实例路径） |
+
+冒烟新增 7 条断言锁定测速配置形态（88 项全过）；测速配置经官方 Xray v26.10.21 二进制 `run -test` 复验 Configuration OK。

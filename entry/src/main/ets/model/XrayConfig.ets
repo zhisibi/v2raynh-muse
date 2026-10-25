@@ -75,6 +75,10 @@ export function defaultSettings(): AppSettings {
 }
 
 export const CONFIG_FILE_NAME = 'xray_config.json';
+/** 测速专用入站端口（v1.2.1）：与正式入站（设置值，默认 10808/10809）分离，
+ *  避免 UI 进程的临时测速实例与扩展进程的运行实例抢端口 */
+export const TEST_SOCKS_PORT = 18088;
+export const TEST_HTTP_PORT = 18089;
 export const TUN_ADDR_V4 = '172.19.0.1';
 export const TUN_PREFIX_V4 = 30;
 export const TUN_ADDR_V6 = 'fdfe:dcba:9876::1';
@@ -382,8 +386,24 @@ function buildProxyOutbound(p: ProfileItem): JsonObj {
   return out;
 }
 
-/** 由节点 + 设置生成完整 Xray 配置 JSON 字符串 */
+/** 由节点 + 设置生成完整 Xray 配置 JSON 字符串（正式连接用，入站端口取设置值） */
 export function buildXrayConfig(p: ProfileItem, s: AppSettings): string {
+  return buildConfigWithPorts(p, s, s.socksPort, s.httpPort, s.tunEnabled);
+}
+
+/**
+ * 测速专用配置（v1.2.1）：与 buildXrayConfig 同一生成逻辑，但入站固定测试端口
+ * 18088/18089，且按 tunEnabled=false 生成（不带 socks/53→dns-out 劫持规则）。
+ * UI 进程起临时实例实测节点延迟时用它：用正式端口会与扩展进程的运行实例
+ * 冲突；带 TUN 劫持规则对临时实例也无意义。CUSTOM 类型仍原样返回
+ * customConfig（用户完整 JSON 自负端口）。
+ */
+export function buildXrayTestConfig(p: ProfileItem, s: AppSettings): string {
+  return buildConfigWithPorts(p, s, TEST_SOCKS_PORT, TEST_HTTP_PORT, false);
+}
+
+function buildConfigWithPorts(p: ProfileItem, s: AppSettings, socksPort: number, httpPort: number,
+  tun: boolean): string {
   if (p.configType === 'CUSTOM') {
     // 用户完整 JSON 原样使用（仅校验可解析）
     try {
@@ -433,7 +453,7 @@ export function buildXrayConfig(p: ProfileItem, s: AppSettings): string {
   const inbounds: Object[] = [];
   const socksIn: JsonObj = {};
   socksIn['tag'] = 'socks';
-  socksIn['port'] = s.socksPort;
+  socksIn['port'] = socksPort;
   socksIn['listen'] = '127.0.0.1';
   socksIn['protocol'] = 'socks';
   const socksSet: JsonObj = {};
@@ -452,7 +472,7 @@ export function buildXrayConfig(p: ProfileItem, s: AppSettings): string {
   inbounds.push(socksIn);
   const httpIn: JsonObj = {};
   httpIn['tag'] = 'http';
-  httpIn['port'] = s.httpPort;
+  httpIn['port'] = httpPort;
   httpIn['listen'] = '127.0.0.1';
   httpIn['protocol'] = 'http';
   const httpSet: JsonObj = {};
@@ -506,7 +526,7 @@ export function buildXrayConfig(p: ProfileItem, s: AppSettings): string {
     if (port.length > 0) r['port'] = port;
     rules.push(r);
   };
-  if (s.tunEnabled) {
+  if (tun) {
     // 规则①（仅 TUN，对照原版 hev DNS 劫持）：hev 经 socks 入站送来的 53 端口
     // 查询交给 dns 出站处理。不要带 network 字段（与原版一致）。
     const dnsRule: JsonObj = {};

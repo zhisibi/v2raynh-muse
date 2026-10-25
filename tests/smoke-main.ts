@@ -3,7 +3,9 @@
 import {
   parseUri, toUri, parseSubscriptionText, ProfileItem, b64Encode,
 } from '../entry/src/main/ets/model/UriParser';
-import { buildXrayConfig, defaultSettings, AppSettings } from '../entry/src/main/ets/model/XrayConfig';
+import {
+  buildXrayConfig, buildXrayTestConfig, TEST_SOCKS_PORT, TEST_HTTP_PORT, defaultSettings, AppSettings,
+} from '../entry/src/main/ets/model/XrayConfig';
 
 let passed: number = 0;
 let failed: number = 0;
@@ -258,6 +260,38 @@ assert(Number(hySet2['version']) === 2, 'xray hy2 version=2');
   const oRouting: Record<string, Object> = oCfg['routing'] as Object as Record<string, Object>;
   const oRules: Array<Record<string, Object>> = oRouting['rules'] as Object as Array<Record<string, Object>>;
   assert(oRules.length === 9, '自定义规则空组不生成规则');
+}
+
+// 测速专用配置（v1.2.1）：默认设置 tunEnabled=true 时，test 配置走测试端口且无 TUN 劫持；正式配置不受影响
+{
+  assert(TEST_SOCKS_PORT === 18088 && TEST_HTTP_PORT === 18089, '测速端口常量 18088/18089');
+  const tText: string = buildXrayTestConfig(vl, settings);
+  assert(tText.indexOf('10808') < 0 && tText.indexOf('10809') < 0, '测速配置不含正式端口 10808/10809');
+  const tCfg: Record<string, Object> = JSON.parse(tText) as Record<string, Object>;
+  const tIn: Array<Record<string, Object>> = tCfg['inbounds'] as Object as Array<Record<string, Object>>;
+  let tSocks: boolean = false;
+  let tHttp: boolean = false;
+  for (let i = 0; i < tIn.length; i++) {
+    if (String(tIn[i]['protocol']) === 'socks' && Number(tIn[i]['port']) === TEST_SOCKS_PORT) tSocks = true;
+    if (String(tIn[i]['protocol']) === 'http' && Number(tIn[i]['port']) === TEST_HTTP_PORT) tHttp = true;
+  }
+  assert(tSocks, '测速配置 socks 入站 18088');
+  assert(tHttp, '测速配置 http 入站 18089');
+  const tRouting: Record<string, Object> = tCfg['routing'] as Object as Record<string, Object>;
+  const tRules: Array<Record<string, Object>> = tRouting['rules'] as Object as Array<Record<string, Object>>;
+  let hasHijack: boolean = false;
+  for (let i = 0; i < tRules.length; i++) {
+    if (String(tRules[i]['outboundTag']) === 'dns-out' && String(tRules[i]['port'] ?? '') === '53') {
+      hasHijack = true;
+    }
+  }
+  assert(!hasHijack, '测速配置无 port53 dns-out 劫持规则');
+  // 正式配置仍含原端口与劫持规则（tunEnabled=true 的 settings 基线 cfgText）
+  assert(cfgText.indexOf('10808') >= 0 && cfgText.indexOf('10809') >= 0, '正式配置仍含 10808/10809');
+  const fRouting: Record<string, Object> = cfg['routing'] as Object as Record<string, Object>;
+  const fRules: Array<Record<string, Object>> = fRouting['rules'] as Object as Array<Record<string, Object>>;
+  assert(String(fRules[0]['outboundTag']) === 'dns-out' && String(fRules[0]['port']) === '53',
+    '正式配置仍含 socks/53->dns-out 劫持规则');
 }
 
 // 全局模式

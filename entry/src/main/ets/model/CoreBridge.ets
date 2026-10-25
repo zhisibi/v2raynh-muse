@@ -11,7 +11,7 @@ interface NativeCore {
   coreVersion(): string;
   lastError(): string;
   queryTraffic(): string;
-  testDelay(configJson: string, url: string, timeoutMs: number): number;
+  testDelay(configJson: string, url: string, timeoutMs: number, assetDir: string): number;
   startTun(socksPort: number, mtu: number, logDir: string): boolean;
   stopTun(): void;
   tunStatus(): string;
@@ -76,10 +76,15 @@ export function queryTraffic(): string {
   }
 }
 
-/** 用给定配置实测延迟（ms），不可用返回 -1 */
-export function testDelay(configJson: string, url: string, timeoutMs: number): number {
+/**
+ * 用给定配置实测延迟（ms），不可用/失败返回 -1（失败原因经 lastError() 回传）。
+ * assetDir 必传（v1.2.1）：无运行实例时 Go 桥起临时实例，LoadConfig 前据此
+ * 设置 XRAY_LOCATION_ASSET，缺了它规则模式的 geo 规则加载失败、测速恒 -1。
+ * 待测配置应由 XrayConfig.buildXrayTestConfig 生成（测试端口与正式端口分离）。
+ */
+export function testDelay(configJson: string, url: string, timeoutMs: number, assetDir: string): number {
   try {
-    return Number(nativeCore.testDelay(configJson, url, timeoutMs));
+    return Number(nativeCore.testDelay(configJson, url, timeoutMs, assetDir));
   } catch (e) {
     return -1;
   }

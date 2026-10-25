@@ -160,3 +160,24 @@ bash tests/run-smoke.sh        # tsc strict 编译 UriParser/XrayConfig 后 Node
 | Tasker 集成 | 未做 |
 | 多语言完整 i18n | 未做（当前中文界面，字符串资源仅 App 名等少数条目） |
 | WebDAV 备份 | 未做 |
+
+## v1.2.1 修复（流量不动 + 节点测速无效）
+
+v1.2.0 真机反馈：主界面、底部测试键、二维码均有效，但**底部流量不动、节点测速无效**。两条根因都在「进程」上——Xray 实例跑在 VPN 扩展进程，UI 进程里并没有核心实例：
+
+| 问题 | 根因 | 修法 |
+|---|---|---|
+| 底部流量不动 | UI 进程调 native `queryTraffic()` 查的是本进程的 Go 全局实例（不存在），永远返回 `{"error":"no-instance"}`，总量恒 0；且原显示只统计 proxy 出站 | **跨进程流量文件**：扩展进程在连接成功后立即采样 + 每 2 秒采样（`queryTraffic()` 本进程解析，proxy 与 direct 分开记），写 `filesDir/vpn_traffic.json`（`{ts,up,down,proxyUp,proxyDown,directUp,directDown}`，带 TRUNC）；UI 每秒读快照显示 **proxy+direct 合计总量 + 差分速率**；停止时停采样并补写最终值；`ConnectManager.readTraffic()` 为统一读口，连接前删旧文件防串话 |
+| 节点测速无效 | UI 侧测速被本进程 `isRunning()`（恒 false）挡住，永远走 TCP 直连握手兜底——UDP 类协议（Hysteria2/WireGuard/QUIC）必然失败、TCP 节点数值也不准；真正的 XrayPing 临时实例路径从未被调用，且它缺资产目录（规则模式 geo 规则加载失败）、与正式配置同用 10808/10809 端口 | **真实测速全链路**：`XrayConfig.buildXrayTestConfig()` 生成测速专用配置（入站固定 **18088/18089**、按非 TUN 生成无 DNS 劫持规则，同一生成逻辑加端口覆盖）；`testDelay` 全链路加第 4 参 `assetDir`（CoreBridge→NAPI→Go），Go 桥临时实例在 LoadConfig 前 Setenv `XRAY_LOCATION_ASSET/CONFIG` 并过 `rewriteLogConfig`（失败原因同时落 `xray_error.log`）；Go 侧 `pingMu` 串行化临时实例防抢测试端口；Index 删 TCP 兜底，失败原因经 `lastError()` 显示在界面并记日志；测速中行内显示「测速中…」，防重入，全部测速进度带成功/失败计数 |
+
+细化：状态变 error 且界面无文案时自动带出扩展写入的失败原因；断开后速率清零。
+
+### v1.2.1 真机验证清单
+
+1. **流量**：TUN 模式连接后浏览网页/看视频约 10 秒，底部流量行总量应持续增长且速率随刷页面波动（有直连流量时也计入）；断开重连后总量从新会话重新累计。
+2. **仅代理模式流量**：切换仅代理连接，流量同样应动。
+3. **节点测速**：未连接状态下对单个节点点「测速」，应显示真实延迟毫秒数（不是秒回的 TCP 数字）；行延迟处测速中显示「测速中…」。
+4. **UDP 类节点测速**：对 Hysteria2 / WireGuard 节点测速，应能测出延迟（旧版必失败）；不可达节点显示「测速失败：<原因>」。
+5. **全部测速**：菜单「全部测速」，进度文案带累计成功/失败数，结束有总数统计；中途可取消。
+6. **连接中测速**：保持连接时对列表里其它节点测速，结果正常且不影响当前连接；底部「测试」键测当前节点延迟正常。
+7. **失败回传**：若仍有个别节点测速失败，应用日志（日志页「测速」条目）与 `xray_assets/xray_error.log` 应有具体原因。

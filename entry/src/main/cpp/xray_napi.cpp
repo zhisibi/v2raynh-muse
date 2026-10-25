@@ -14,7 +14,7 @@
  *   void        XrayStop(void);
  *   const char* XrayVersion(void);
  *   const char* XrayLastError(void);
- *   int         XrayPing(const char* configJson, const char* url, int timeoutMs); // v1 占位 -1
+ *   int         XrayPing(const char* configJson, const char* url, int timeoutMs, const char* assetDir); // v1.2.1 起 4 参：临时实例需资产目录
  *   const char* XrayTraffic(void); // 可选符号，缺失时 queryTraffic 返回 {}
  *
  * hev C ABI（scripts/build-hevtun.sh 产物 libhevtun.so，适配层约定）：
@@ -48,7 +48,7 @@ using XrayStartFn = int (*)(const char *configJson, const char *assetDir);
 using XrayStopFn = void (*)();
 using XrayVersionFn = const char *(*)();
 using XrayLastErrorFn = const char *(*)();
-using XrayPingFn = int (*)(const char *configJson, const char *url, int timeoutMs);
+using XrayPingFn = int (*)(const char *configJson, const char *url, int timeoutMs, const char *assetDir);
 using XrayTrafficFn = const char *(*)();
 using HevStartFn = int (*)(const char *configYaml, int tunFd);
 using HevStopFn = void (*)();
@@ -272,19 +272,22 @@ static napi_value QueryTraffic(napi_env env, napi_callback_info info) {
     return makeString(env, value);
 }
 
-// ---- testDelay(configJson, url, timeoutMs): number ----
+// ---- testDelay(configJson, url, timeoutMs, assetDir): number ----
+// v1.2.1：assetDir 第 4 参透传给 Go 桥——临时实例 LoadConfig 前据此设置
+// XRAY_LOCATION_ASSET，缺了它规则模式 geo 规则加载失败、测速恒 -1。
 static napi_value TestDelay(napi_env env, napi_callback_info info) {
-    size_t argc = 3;
-    napi_value args[3] = {nullptr, nullptr, nullptr};
+    size_t argc = 4;
+    napi_value args[4] = {nullptr, nullptr, nullptr, nullptr};
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-    std::string config, url;
+    std::string config, url, assetDir;
     int32_t timeoutMs = 5000;
     int rc = -1;
-    if (argc >= 3 && getUtf8String(env, args[0], config, MAX_TEXT_BYTES) &&
+    if (argc >= 4 && getUtf8String(env, args[0], config, MAX_TEXT_BYTES) &&
         getUtf8String(env, args[1], url, 2048) &&
         napi_get_value_int32(env, args[2], &timeoutMs) == napi_ok &&
+        getUtf8String(env, args[3], assetDir, 4096) &&
         loadCore() && g_ping != nullptr) {
-        rc = g_ping(config.c_str(), url.c_str(), timeoutMs);
+        rc = g_ping(config.c_str(), url.c_str(), timeoutMs, assetDir.c_str());
     }
     napi_value result;
     napi_create_int32(env, rc, &result);

@@ -21,6 +21,7 @@ import {
 const TAG = 'V2RayVpn';
 const DOMAIN = 0xff01;
 const STATUS_FILE = 'vpn_status.json';
+const TRAFFIC_FILE = 'vpn_traffic.json';
 const PERAPP_FILE = 'vpn_perapp.json';
 const PARAM_MODE = 'v2rayng_mode';
 const MTU = 1500;
@@ -36,6 +37,24 @@ interface VpnStatus {
   step: string;
 }
 
+/**
+ * vpn_traffic.json 结构（v1.2.1 跨进程流量上报）：扩展进程每 2 秒写一份，
+ * UI 进程经 ConnectManager.readTraffic() 读。Xray 实例只在扩展进程，
+ * UI 进程直接调 native queryTraffic() 永远拿到 no-instance——这是 v1.2.0
+ * 「底部流量不动」的根因，故改走文件。up/down 为 proxy+direct 合计；
+ * raw 带 error 时附 error 字段且计数为 0。
+ */
+interface TrafficFile {
+  ts: number;
+  up: number;
+  down: number;
+  proxyUp: number;
+  proxyDown: number;
+  directUp: number;
+  directDown: number;
+  error?: string;
+}
+
 function logInfo(msg: string): void {
   hilog.info(DOMAIN, TAG, '%{public}s', msg);
 }
@@ -48,6 +67,7 @@ export default class V2RayVpnExtension extends VpnExtensionAbility {
   private connection: vpnExtension.VpnConnection | undefined = undefined;
   private tunMode: boolean = true;
   private currentStep: string = '';
+  private trafficTimer: number = -1;
 
   onCreate(want?: Want): void {
     const params: Record<string, Object> | undefined = want?.parameters;
@@ -110,6 +130,71 @@ export default class V2RayVpnExtension extends VpnExtensionAbility {
     this.diag('step:' + mark);
   }
 
+  private trafficPath(): string {
+    return this.context.filesDir + '/' + TRAFFIC_FILE;
+  }
+
+  /** 采一次流量并写 vpn_traffic.json（写入带 TRUNC，同状态文件的教训） */
+  private sampleTraffic(): void {
+    const snap: TrafficFile = {
+      ts: Date.now(),
+      up: 0,
+      down: 0,
+      proxyUp: 0,
+      proxyDown: 0,
+      directUp: 0,
+      directDown: 0,
+    };
+    try {
+      const raw: string = queryTraffic();
+      const o: Record<string, Object> = JSON.parse(raw) as Record<string, Object>;
+      const errVal: Object | undefined = o['error'];
+      if (errVal !== undefined && String(errVal).length > 0) {
+        snap.error = String(errVal);
+      } else {
+        snap.proxyUp = Number(o['up'] ?? 0);
+        snap.proxyDown = Number(o['down'] ?? 0);
+        snap.directUp = Number(o['directUp'] ?? 0);
+        snap.directDown = Number(o['directDown'] ?? 0);
+        snap.up = snap.proxyUp + snap.directUp;
+        snap.down = snap.proxyDown + snap.directDown;
+      }
+    } catch (e) {
+      snap.error = 'parse-error';
+    }
+    let file: fs.File | null = null;
+    try {
+      file = fs.openSync(this.trafficPath(), fs.OpenMode.READ_WRITE | fs.OpenMode.CREATE | fs.OpenMode.TRUNC);
+      fs.writeSync(file.fd, JSON.stringify(snap));
+    } catch (e) {
+      // 忽略
+    } finally {
+      if (file !== null) {
+        try {
+          fs.closeSync(file);
+        } catch (e2) {
+          // 忽略
+        }
+      }
+    }
+  }
+
+  /** 启动流量采样：立即一次 + 每 2 秒一次（writeStatus('running') 后调用） */
+  private startTrafficSampling(): void {
+    this.stopTrafficSampling();
+    this.sampleTraffic();
+    this.trafficTimer = setInterval(() => {
+      this.sampleTraffic();
+    }, 2000);
+  }
+
+  private stopTrafficSampling(): void {
+    if (this.trafficTimer >= 0) {
+      clearInterval(this.trafficTimer);
+      this.trafficTimer = -1;
+    }
+  }
+
   /** 诊断日志（追加写文件，UI 侧可读——扩展与 UI 不在同一进程） */
   private diag(msg: string): void {
     const d: Date = new Date();
@@ -157,6 +242,7 @@ export default class V2RayVpnExtension extends VpnExtensionAbility {
       const okProxy: boolean = startXray(configText, this.assetDir());
       if (!okProxy) throw new Error('内核启动失败: ' + lastError());
       this.writeStatus('running', '', 'core-ok');
+      this.startTrafficSampling();
       this.diag('完成: 仅代理模式，核心运行中');
       return;
     }
@@ -271,6 +357,7 @@ export default class V2RayVpnExtension extends VpnExtensionAbility {
       throw new Error('TUN 转发启动失败：hev 未就绪（startTun=false），详见诊断日志');
     }
     this.writeStatus('running', '', 'running');
+    this.startTrafficSampling();
     this.diag('完成: Xray 核心运行中，TUN 转发已启动');
     // v1.1.1 分段探针：只写 diag，绝不影响已建立的连接（见 scheduleProbes）
     this.scheduleProbes(configText, socksPort);
@@ -294,7 +381,7 @@ export default class V2RayVpnExtension extends VpnExtensionAbility {
     setTimeout(() => {
       // 节点探针：用运行实例实测当前节点出站（XrayPing 运行实例路径）
       try {
-        const ms: number = testDelay(configText, 'http://www.gstatic.com/generate_204', 6000);
+        const ms: number = testDelay(configText, 'http://www.gstatic.com/generate_204', 6000, this.assetDir());
         this.diag('探针/节点: testDelay(generate_204)=' + ms + (ms >= 0 ? 'ms' : '（失败）'));
       } catch (e) {
         this.diag('探针/节点: 异常 ' + (e instanceof Error ? e.message : String(e)));
@@ -506,6 +593,13 @@ export default class V2RayVpnExtension extends VpnExtensionAbility {
 
   /** 拆隧道与核心（不写状态文件），供 onDestroy 与启动失败路径共用 */
   private teardown(): void {
+    // 先停采样并在核心还活着时补写最终采样，再拆隧道/核心
+    this.stopTrafficSampling();
+    try {
+      this.sampleTraffic();
+    } catch (e) {
+      // 忽略
+    }
     try {
       stopTun();
     } catch (e) {

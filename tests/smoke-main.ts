@@ -154,19 +154,48 @@ const hyStream: Record<string, Object> = hyOuts[0]['streamSettings'] as Object a
 const hySet2: Record<string, Object> = hyStream['hysteriaSettings'] as Object as Record<string, Object>;
 assert(Number(hySet2['version']) === 2, 'xray hy2 version=2');
 
-// TUN 模式 DNS 出站与规则（v1.1.0）：默认 settings.tunEnabled=true
+// TUN 模式 DNS 架构（v1.1.2 对照原版 v2rayNG）：默认 settings.tunEnabled=true
 {
   const outTags: string[] = outbounds.map((o: Record<string, Object>) => String(o['tag']));
-  assert(outTags.indexOf('dns') >= 0, 'tun 模式含 dns 出站');
-  const dnsOut: Record<string, Object> = outbounds[outTags.indexOf('dns')];
-  assert(String(dnsOut['protocol']) === 'dns', 'dns 出站协议 dns');
+  // dns 出站只有一个且 tag=dns-out；不得再有 tag=dns 的重复出站
+  const dnsProtoTags: string[] = outbounds
+    .filter((o: Record<string, Object>) => String(o['protocol']) === 'dns')
+    .map((o: Record<string, Object>) => String(o['tag']));
+  assert(dnsProtoTags.length === 1 && dnsProtoTags[0] === 'dns-out', 'tun 模式仅一个 dns 出站 dns-out');
+  assert(outTags.indexOf('dns') < 0, 'tun 模式无重复 tag=dns 出站');
+  // dns 模块：tag=dns-module；servers[0] 带 dns-domestic tag + skipFallback；兜底为字符串
+  const dnsSec: Record<string, Object> = cfg['dns'] as Object as Record<string, Object>;
+  assert(String(dnsSec['tag']) === 'dns-module', 'dns tag=dns-module');
+  const dnsServers: Object[] = dnsSec['servers'] as Object as Object[];
+  const srv0: Record<string, Object> = dnsServers[0] as Object as Record<string, Object>;
+  assert(String(srv0['tag']) === 'dns-domestic' && Boolean(srv0['skipFallback']) === true,
+    '国内 DNS 条目 tag=dns-domestic 且 skipFallback');
+  assert(typeof dnsServers[2] === 'string', 'dns 第三条兜底为远程 DNS 字符串');
   const routing: Record<string, Object> = cfg['routing'] as Object as Record<string, Object>;
   const rules: Array<Record<string, Object>> = routing['rules'] as Object as Array<Record<string, Object>>;
+  // 规则①：tun hev DNS 劫持 socks/53 -> dns-out（无 network 字段）
   const r0: Record<string, Object> = rules[0];
-  assert(String(r0['outboundTag']) === 'dns' && String(r0['network']) === 'udp' &&
-    String(r0['port']) === '53', 'tun dns 规则 udp/53->dns');
+  assert(String(r0['outboundTag']) === 'dns-out' && String(r0['port']) === '53' &&
+    r0['network'] === undefined, 'tun dns 劫持规则 53->dns-out（无 network）');
   const inTag: Object[] = r0['inboundTag'] as Object as Object[];
-  assert(inTag.length === 1 && String(inTag[0]) === 'socks', 'tun dns 规则 inboundTag=socks');
+  assert(inTag.length === 1 && String(inTag[0]) === 'socks', 'tun dns 劫持规则 inboundTag=socks');
+  // 规则②：dns-domestic -> direct；规则③：dns-module -> proxy
+  const r1: Record<string, Object> = rules[1];
+  const r1Tag: Object[] = r1['inboundTag'] as Object as Object[];
+  assert(String(r1['outboundTag']) === 'direct' && r1Tag.length === 1 &&
+    String(r1Tag[0]) === 'dns-domestic', '规则 dns-domestic->direct');
+  const r2: Record<string, Object> = rules[2];
+  const r2Tag: Object[] = r2['inboundTag'] as Object as Object[];
+  assert(String(r2['outboundTag']) === 'proxy' && r2Tag.length === 1 &&
+    String(r2Tag[0]) === 'dns-module', '规则 dns-module->proxy');
+  // catch-all 不存在：不允许无 inboundTag 的 port=53 规则（v1.1.1 的递归黑洞根因）
+  let hasCatchAll: boolean = false;
+  for (let i = 0; i < rules.length; i++) {
+    if (String(rules[i]['port'] ?? '') === '53' && rules[i]['inboundTag'] === undefined) {
+      hasCatchAll = true;
+    }
+  }
+  assert(!hasCatchAll, '无 port53 catch-all 规则');
   // stats/policy（流量统计前置）
   assert(cfg['stats'] !== undefined, 'xray 含 stats');
   const policy: Record<string, Object> = cfg['policy'] as Object as Record<string, Object>;
@@ -181,10 +210,16 @@ assert(Number(hySet2['version']) === 2, 'xray hy2 version=2');
   const pCfg: Record<string, Object> = JSON.parse(buildXrayConfig(vl, pSettings)) as Record<string, Object>;
   const pOuts: Array<Record<string, Object>> = pCfg['outbounds'] as Object as Array<Record<string, Object>>;
   const pTags: string[] = pOuts.map((o: Record<string, Object>) => String(o['tag']));
-  assert(pTags.indexOf('dns') < 0, '仅代理模式无 dns 出站（dns-out 保留）');
+  assert(pTags.indexOf('dns') < 0, '仅代理模式无重复 tag=dns 出站（dns-out 保留）');
   const pRouting: Record<string, Object> = pCfg['routing'] as Object as Record<string, Object>;
   const pRules: Array<Record<string, Object>> = pRouting['rules'] as Object as Array<Record<string, Object>>;
-  assert(String(pRules[0]['outboundTag']) === 'dns-out', '仅代理模式首条规则为 dns-out');
+  // 仅代理模式无 tun 劫持规则，首条为 dns-domestic->direct、次条 dns-module->proxy
+  const pR0Tag: Object[] = pRules[0]['inboundTag'] as Object as Object[];
+  assert(String(pRules[0]['outboundTag']) === 'direct' && String(pR0Tag[0]) === 'dns-domestic',
+    '仅代理模式首条规则 dns-domestic->direct');
+  const pR1Tag: Object[] = pRules[1]['inboundTag'] as Object as Object[];
+  assert(String(pRules[1]['outboundTag']) === 'proxy' && String(pR1Tag[0]) === 'dns-module',
+    '仅代理模式次条规则 dns-module->proxy');
 }
 
 // 全局模式

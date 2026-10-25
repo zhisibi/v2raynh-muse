@@ -357,30 +357,35 @@ export function buildXrayConfig(p: ProfileItem, s: AppSettings): string {
   log['loglevel'] = s.logLevel.length > 0 ? s.logLevel : 'warning';
   root['log'] = log;
 
-  // DNS 防泄漏：代理域名经远程 DNS、国内域名本地 DNS 直连解析；
-  // 服务器域名本身用本地 DNS（避免鸡生蛋），其余默认走 proxy 出站解析。
+  // DNS 架构对照原版 v2rayNG（CoreConfigManager.kt，v1.1.2 修正）：
+  // dns.tag='dns-module'——内部 DNS 模块产生的流量带 inboundTag 'dns-module'，
+  // 由路由规则 {inboundTag:[dns-module] -> proxy} 整体经代理出站（远程 DNS 是
+  // IP 地址、无鸡生蛋问题）；国内服务器条目带 per-server tag 'dns-domestic'，
+  // 由 {inboundTag:[dns-domestic] -> direct} 直连。切勿加无 inboundTag 的
+  // port:53 catch-all 规则：那会把 DNS 模块自己的上游查询也劫持回 dns 出站，
+  // 造成解析递归黑洞（v1.1.0/1.1.1 真机无法联网的根因）。
   const dns: JsonObj = {};
   const hosts: JsonObj = {};
   dns['hosts'] = hosts;
   const servers: Object[] = [];
-  const remote: JsonObj = {};
-  remote['address'] = s.remoteDns;
-  remote['port'] = 53;
-  remote['domains'] = ['geosite:geolocation-!cn'];
-  remote['expectIPs'] = [];
-  // 注：远程 DNS 请求经 proxy 出站（由 routing 规则 geosite:geolocation-!cn -> proxy 保证）
-  servers.push(remote);
   const local: JsonObj = {};
   local['address'] = s.localDns;
   local['port'] = 53;
   local['domains'] = ['geosite:cn'];
   local['skipFallback'] = true;
+  local['tag'] = 'dns-domestic';
   servers.push(local);
+  const remote: JsonObj = {};
+  remote['address'] = s.remoteDns;
+  remote['port'] = 53;
+  remote['domains'] = ['geosite:geolocation-!cn'];
+  remote['expectIPs'] = [];
+  servers.push(remote);
   // 兜底：远程 DNS
   servers.push(s.remoteDns);
   dns['servers'] = servers;
   dns['queryStrategy'] = s.ipv6Enabled ? 'UseIP' : 'UseIPv4';
-  dns['tag'] = 'dns-in';
+  dns['tag'] = 'dns-module';
   root['dns'] = dns;
 
   const inbounds: Object[] = [];
@@ -439,19 +444,12 @@ export function buildXrayConfig(p: ProfileItem, s: AppSettings): string {
   bset['response'] = bresp;
   block['settings'] = bset;
   outbounds.push(block);
-  // DNS 出站（供 dns tag 路由）
+  // DNS 出站只有一个（tag=dns-out，对照原版 TAG_DNS_OUT）：
+  // 供 hev 劫持规则 {inboundTag:[socks], port:53 -> dns-out} 使用。
   const dnsOut: JsonObj = {};
   dnsOut['tag'] = 'dns-out';
   dnsOut['protocol'] = 'dns';
   outbounds.push(dnsOut);
-  if (s.tunEnabled) {
-    // TUN 模式专用 DNS 出站（tag=dns）：进隧道后的 DNS 查询由 Xray 内置 DNS
-    // 服务处理（dns.servers 已做防泄漏分流），规则见下方 routing 首条。
-    const dnsTun: JsonObj = {};
-    dnsTun['tag'] = 'dns';
-    dnsTun['protocol'] = 'dns';
-    outbounds.push(dnsTun);
-  }
   root['outbounds'] = outbounds;
 
   const routing: JsonObj = {};
@@ -467,18 +465,27 @@ export function buildXrayConfig(p: ProfileItem, s: AppSettings): string {
     rules.push(r);
   };
   if (s.tunEnabled) {
-    // TUN 模式首条规则：经 socks 入站进来的 UDP/53（hev 转发的 DNS 包）
-    // 交给内置 DNS 出站（tag=dns），避免 DNS 在隧道内绕圈或泄漏。
+    // 规则①（仅 TUN，对照原版 hev DNS 劫持）：hev 经 socks 入站送来的 53 端口
+    // 查询交给 dns 出站处理。不要带 network 字段（与原版一致）。
     const dnsRule: JsonObj = {};
     dnsRule['type'] = 'field';
     dnsRule['inboundTag'] = ['socks'];
-    dnsRule['network'] = 'udp';
     dnsRule['port'] = '53';
-    dnsRule['outboundTag'] = 'dns';
+    dnsRule['outboundTag'] = 'dns-out';
     rules.push(dnsRule);
   }
-  // DNS 查询强制走 dns-out
-  addRule('dns-out', [], [], '53');
+  // 规则②：国内 DNS 服务器（per-server tag dns-domestic）产生的查询直连
+  const domesticRule: JsonObj = {};
+  domesticRule['type'] = 'field';
+  domesticRule['inboundTag'] = ['dns-domestic'];
+  domesticRule['outboundTag'] = 'direct';
+  rules.push(domesticRule);
+  // 规则③：内部 DNS 模块的其余上游查询（远程 DNS）整体经代理出站
+  const moduleRule: JsonObj = {};
+  moduleRule['type'] = 'field';
+  moduleRule['inboundTag'] = ['dns-module'];
+  moduleRule['outboundTag'] = 'proxy';
+  rules.push(moduleRule);
   if (s.routingMode === 'global') {
     addRule('proxy', ['0.0.0.0/0', '::/0'], [], '');
   } else if (s.routingMode === 'direct') {

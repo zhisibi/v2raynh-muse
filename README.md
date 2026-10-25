@@ -122,3 +122,13 @@ bash tests/run-smoke.sh        # tsc strict 编译 UriParser/XrayConfig 后 Node
 | SOCKS 自检成功（首行 HTTP/1.x 204）但浏览器不通 | 核心与节点没问题，问题在 TUN→hev 段或系统路由/DNS：看流量探针与 hev.log |
 | 流量探针 up/down 全 0 且 SOCKS 自检成功 | TUN 侧没有流量进来：hev 未真正读 TUN fd 或路由未生效 |
 | protect 结果=缺失或失败 | 防回环没生效，核心连节点的流量可能绕回 TUN 自环 |
+
+## v1.1.2 修复（DNS 路由错抄根因）
+
+1.1.1 真机探针回传定段：protect=ok、hev 线程活着、SOCKS 自检能连通核心但 HTTP 无响应、节点 testDelay=-1、流量 {}——**死在 Xray 出站段**。对照原版 `CoreConfigManager.kt` 实锤根因：我们的 DNS 路由是错抄的。
+
+- **原版 DNS 架构**（对照 AppConfig/CoreConfigManager）：`dns.tag="dns-module"`，内部 DNS 模块产生的流量带 inboundTag `dns-module`；国内 DNS 服务器条目带 per-server tag（原版 `domestic-dns_0_0`，我们用 `dns-domestic`），domains=直连域名、skipFallback=true；路由有两条 DNS 专用规则 `{inboundTag:[domesticTags] → direct}`、`{inboundTag:["dns-module"] → proxy}`；hev 的 DNS 劫持是 `{inboundTag:["socks"], port:"53" → dns-out}` 插在最前。
+- **我们的错误**：①一条无 inboundTag 的 catch-all `{port:"53" → dns-out}` 把内部 DNS 模块自己的上游查询（目的端口 53、inboundTag 为我们的 dns tag）也劫持进 dns 出站——解析递归/黑洞，节点域名与一切远程解析全死，出站自然无响应；②缺 `{inboundTag:[dns-module] → proxy}`；③TUN 下多造了一个 tag="dns" 的重复 dns 出站。
+- **修复**：按原版重写 XrayConfig 的 DNS 段与规则顺序（tun 劫持 → dns-domestic→direct → dns-module→proxy → 模式规则），dns 出站只保留 `dns-out` 一个；冒烟断言同步锁定该形态（74 项），官方 Xray 26.10.21 二进制 `run -test` = Configuration OK。
+- **内核日志回传**：Go 桥 XrayStart 在 LoadConfig 前改写 config 的 log 段——loglevel 不足 info 时提升为 info、error 日志落盘 `filesDir/xray_assets/xray_error.log`、access 禁用；扩展 9 秒探针把其尾部约 30 行以 `[xray.log]` 前缀并入 vpn_diag。真机若仍不通，回传日志页全文即可看到 Xray 出站/DNS 的真实报错。
+- **流量探针判读改进**：XrayTraffic 失败分支不再统一返回 `{}`，改为 `{"error":"no-instance"|"no-feature"|"bad-type"}`，正常路径不变。

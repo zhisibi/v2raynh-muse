@@ -320,7 +320,31 @@ export default class V2RayVpnExtension extends VpnExtensionAbility {
         // 忽略
       }
       this.dumpHevLogTail();
+      this.dumpXrayLogTail();
     }, 9000);
+  }
+
+  /**
+   * 把 Xray 内核 error 日志（xray_assets/xray_error.log，Go 桥 XrayStart
+   * 改写 log 段后落盘，v1.1.2）最后约 30 行并入 vpn_diag（[xray.log] 前缀）。
+   * 出站/DNS 的真实报错都在这里，是定位「连上但不通」的关键证据。
+   */
+  private dumpXrayLogTail(): void {
+    const path: string = this.assetDir() + '/xray_error.log';
+    let text: string = '';
+    try {
+      text = fs.readTextSync(path, { encoding: 'utf-8' });
+    } catch (e) {
+      this.diag('[xray.log] 文件不存在（内核未写 error 日志或日志改写未生效）');
+      return;
+    }
+    const all: string[] = text.split('\n');
+    const start: number = Math.max(0, all.length - 31);
+    this.diag('[xray.log] ---- 尾部 ' + (all.length - start) + ' 行 ----');
+    for (let i = start; i < all.length; i++) {
+      const line: string = all[i].trim();
+      if (line.length > 0) this.diag('[xray.log] ' + line);
+    }
   }
 
   /** 把 hev.log 最后约 30 行并入 vpn_diag（每行加 [hev.log] 前缀） */

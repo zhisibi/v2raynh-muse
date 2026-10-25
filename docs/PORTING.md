@@ -83,3 +83,14 @@
 | hev 日志 | 同上 + 扩展 | StartTun 第三参 logDir → setenv HEV_LOG_PATH；adapter dup2 stderr→hev.log；yaml log-level debug |
 | 分段探针 | `V2RayVpnExtension.scheduleProbes/socksSelfCheck/dumpHevLogTail` | 1s tunStatus / 3s 节点+自检 / 9s 流量+hev.log 尾；纯 diag，不影响连接 |
 | 诊断区 UI | `pages/LogsPage.ets`、`model/LogStore.readDiagText` | 页内展示 vpn_diag.txt，导出路径不变 |
+
+## v1.1.2 修复对照
+
+| 项 | 文件 | 说明 |
+|---|---|---|
+| DNS 架构重写 | `model/XrayConfig.ets` | dns.tag dns-in→dns-module；servers[0] 加 tag=dns-domestic（对照原版 domestic-dns_0_0）；删 tag=dns 的重复出站，只留 dns-out |
+| 路由规则 | 同上 | 顺序：tun 时 {socks,53→dns-out}（无 network 字段）→ {dns-domestic→direct} → {dns-module→proxy} → 模式规则；删除 catch-all {port:53→dns-out}（递归黑洞根因） |
+| 内核日志落盘 | `core/xray-bridge/main.go` | rewriteLogConfig：LoadConfig 前提升 loglevel 至 info、log.error=<assetDir>/xray_error.log、log.access=""；失败回退原 config |
+| 流量失败标记 | 同上 | XrayTraffic 三个失败分支返回 {"error":"no-instance"/"no-feature"/"bad-type"} |
+| xray 日志并入诊断 | `vpnextension/V2RayVpnExtension.dumpXrayLogTail` | 9 秒探针在 hev.log 尾部后追加 xray_error.log 尾部约 30 行（[xray.log] 前缀） |
+| 冒烟断言 | `tests/smoke-main.ts` | dns.tag/servers[0].tag/规则前三条/无 catch-all/dns 出站唯一，74 项全过；官方二进制 run -test Configuration OK |

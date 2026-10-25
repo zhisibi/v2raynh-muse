@@ -65,6 +65,37 @@ func snapshotInstance() (*core.Instance, string) {
 	return instance, runningConfig
 }
 
+// rewriteLogConfig 在 LoadConfig 前改写 config 的 log 段（v1.1.2）：
+// loglevel 为 warning/error（或缺失）时提升为 info，让真机故障能在
+// xray_error.log 里留下出站/DNS 的实际报错；error 日志落盘到
+// assetDir/xray_error.log（扩展探针会把尾部并入 vpn_diag 回传）；
+// access 设为空字符串禁用访问日志防爆盘。解析/改写任何一步失败都
+// 返回原 config，绝不阻断启动。
+func rewriteLogConfig(cfg string, assetDir string) string {
+	var root map[string]interface{}
+	if err := json.Unmarshal([]byte(cfg), &root); err != nil {
+		return cfg
+	}
+	logObj, ok := root["log"].(map[string]interface{})
+	if !ok || logObj == nil {
+		logObj = map[string]interface{}{}
+	}
+	level, _ := logObj["loglevel"].(string)
+	if level == "" || level == "warning" || level == "error" {
+		logObj["loglevel"] = "info"
+	}
+	if assetDir != "" {
+		logObj["error"] = filepath.Join(assetDir, "xray_error.log")
+	}
+	logObj["access"] = ""
+	root["log"] = logObj
+	out, err := json.Marshal(root)
+	if err != nil {
+		return cfg
+	}
+	return string(out)
+}
+
 // XrayStart 启动 Xray 实例。
 // configJSON: 完整 Xray JSON 配置（由 ArkTS 的 XrayConfig 生成）。
 // assetDir:   资产目录（geoip.dat/geosite.dat 所在目录）；启动前
@@ -94,6 +125,8 @@ func XrayStart(configJSON *C.char, assetDir *C.char) C.int {
 		lastErr = "empty config"
 		return 1
 	}
+	// v1.1.2：提升 loglevel 并把 error 日志落盘 xray_error.log（见 rewriteLogConfig）
+	cfg = rewriteLogConfig(cfg, asset)
 	// 以 JSON 格式加载配置（对应 core.LoadConfig("json", reader)）
 	loaded, err := core.LoadConfig("json", bytes.NewReader([]byte(cfg)))
 	if err != nil {
@@ -241,22 +274,25 @@ func XrayPing(configJSON *C.char, urlStr *C.char, timeoutMs C.int) C.int {
 // up/down 与 upTotal/downTotal 同为 proxy 出站累计字节（桥只给累计值，
 // 速率由 UI 侧按采样差分计算）。计数器来自配置 policy.system 的
 // statsOutboundUplink/Downlink（XrayConfig 生成端已开启），计数器名
-// outbound>>>{tag}>>>traffic>>>{uplink|downlink}。无实例运行时返回 "{}"。
+// outbound>>>{tag}>>>traffic>>>{uplink|downlink}。
+// 失败分支带 error 标记（v1.1.2，探针判读用）：无实例 {"error":"no-instance"}、
+// GetFeature 为 nil {"error":"no-feature"}、类型断言失败 {"error":"bad-type"}；
+// 正常路径仍返回计数 JSON。注意旧版"{}"无法区分失败原因，已弃用。
 //
 //export XrayTraffic
 func XrayTraffic() *C.char {
 	inst, _ := snapshotInstance()
 	if inst == nil {
-		return cString("{}")
+		return cString(`{"error":"no-instance"}`)
 	}
 	// xray v26：Instance.GetFeature 只返回单个值（旧版为 (value, error)）
 	feat := inst.GetFeature(stats.ManagerType)
 	if feat == nil {
-		return cString("{}")
+		return cString(`{"error":"no-feature"}`)
 	}
 	mgr, ok := feat.(stats.Manager)
 	if !ok || mgr == nil {
-		return cString("{}")
+		return cString(`{"error":"bad-type"}`)
 	}
 	get := func(name string) int64 {
 		// xray v26：GetCounter 只返回计数器本身，缺失时为 nil

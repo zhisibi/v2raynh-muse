@@ -3,7 +3,7 @@
 把 Android 的 [v2rayNG](https://github.com/2dust/v2rayNG)（2.3.13，Xray 内核）移植到鸿蒙原生（ArkTS/ArkUI）。
 
 - **包名（新）**：`com.bosh.v2rayng`（应用名仍为 v2rayNG）
-- **版本**：1.1.0 (101)，vendor=bosh
+- **版本**：1.2.0 (104)，vendor=bosh
 - **Xray 内核**：v26.10.21（最新；tag commit 1b1647cd 的 pseudo-version 固定，Go 1.27 OHOS 工具链编译）
 - **图标**：原版 v2rayNG 图标（白色背景，源图来自安卓工程 `ic_launcher-web.png`）
 - **许可证**：随原项目 GPL-3.0
@@ -41,7 +41,8 @@ LibXray（gomobile AAR）运行核心 → VpnService 建 TUN → hev-socks5-tunn
 - 内置日志（老板铁律）：内存 + `filesDir/logs/v2rayng.log` 落盘 + 扩展诊断 `vpn_diag.txt`，日志页可导出（剪贴板 / 系统保存到文件）
 - 扫码导入（Scan Kit）、全部测速（经核心 XrayPing 实测，可取消）、流量统计（核心 stats 累计字节）
 - 按应用代理（基础版）：黑名单/白名单包名名单，TUN 建连时经 `vpn_perapp.json` 传给扩展
-- 备份：节点 JSON 导出/导入（剪贴板）
+- 备份与恢复：节点+订阅+设置整体导出/导入（保存到文件 / 剪贴板，恢复二次确认）
+- 界面（v1.2.0 对齐安卓版）：单页主界面（顶栏+分组标签+列表+底部连接栏）、节点二维码分享、路由设置页（自定义规则）、主题切换、启动自动连接、连接通知、geo 数据在线更新
 
 ## 构建
 
@@ -132,3 +133,30 @@ bash tests/run-smoke.sh        # tsc strict 编译 UriParser/XrayConfig 后 Node
 - **修复**：按原版重写 XrayConfig 的 DNS 段与规则顺序（tun 劫持 → dns-domestic→direct → dns-module→proxy → 模式规则），dns 出站只保留 `dns-out` 一个；冒烟断言同步锁定该形态（74 项），官方 Xray 26.10.21 二进制 `run -test` = Configuration OK。
 - **内核日志回传**：Go 桥 XrayStart 在 LoadConfig 前改写 config 的 log 段——loglevel 不足 info 时提升为 info、error 日志落盘 `filesDir/xray_assets/xray_error.log`、access 禁用；扩展 9 秒探针把其尾部约 30 行以 `[xray.log]` 前缀并入 vpn_diag。真机若仍不通，回传日志页全文即可看到 Xray 出站/DNS 的真实报错。
 - **流量探针判读改进**：XrayTraffic 失败分支不再统一返回 `{}`，改为 `{"error":"no-instance"|"no-feature"|"bad-type"}`，正常路径不变。
+
+## v1.2.0 对齐（界面与功能对齐安卓版 v2rayNG）
+
+主界面从四 Tab 改为安卓式单页：顶栏（标题/搜索/扫码/菜单）+ 订阅分组标签行 + 服务器列表 + 底部连接栏（连接键、选中节点、上下行流量、测试键）。核心链路（XrayConfig 的 DNS 架构、VpnExtension、Go 桥、C 桥）未动，唯一例外是按 F 项给 XrayConfig 增加了自定义规则注入点。
+
+| 安卓版功能 | 鸿蒙状态 |
+|---|---|
+| 主界面（顶栏+分组标签+列表+底部连接栏） | 已对齐 |
+| 节点列表行（选中标记/备注/协议·地址/延迟着色） | 已对齐 |
+| 行操作（测速/编辑/分享链接/分享二维码/复制地址/删除确认） | 已对齐（长按或行尾 ⋮ 菜单） |
+| 搜索过滤 + 排序（延迟/名称/添加时间） | 已对齐 |
+| 二维码分享 | 已对齐（ScanKit generateBarcode 真实生成） |
+| 扫码导入 | 已对齐 |
+| 订阅管理（备注/域名/节点数/更新时间/用量/启停/更新全部带进度） | 已对齐 |
+| 路由设置（模式 + 自定义域名/IP 规则） | 已对齐（基础版：五组多行文本，插入模式规则之前） |
+| 应用设置分组（核心/VPN/订阅/界面/高级） | 已对齐 |
+| 主题（跟随系统/浅色/深色） | 已对齐（ApplicationContext.setColorMode） |
+| 启动自动连接 | 已对齐 |
+| geo 数据更新 | 已对齐（下载 Loyalsoldier latest 覆盖 filesDir/xray_assets） |
+| 备份与恢复（文件/剪贴板） | 已对齐（基础版：JSON 整体导出/恢复） |
+| 连接状态通知 | 已对齐（基础通知，连接发/断开撤，id 1001） |
+| 策略组 / 代理链 | 未做 |
+| root 模式（TProxy 等） | 未做（鸿蒙无对应机制） |
+| QS 磁贴 / 桌面小部件 | 未做 |
+| Tasker 集成 | 未做 |
+| 多语言完整 i18n | 未做（当前中文界面，字符串资源仅 App 名等少数条目） |
+| WebDAV 备份 | 未做 |

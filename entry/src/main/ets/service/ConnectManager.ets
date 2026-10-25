@@ -1,5 +1,6 @@
 // v2rayNG Harmony · 连接编排：生成 Xray 配置 -> 写文件 -> 拉起 VPN 扩展 -> 轮询状态
 import { fileIo as fs } from '@kit.CoreFileKit';
+import { notificationManager } from '@kit.NotificationKit';
 import { ServerStore } from '../model/ServerStore';
 import { SettingsStore } from '../model/SettingsStore';
 import { buildXrayConfig, CONFIG_FILE_NAME } from '../model/XrayConfig';
@@ -58,6 +59,39 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve: () => void) => setTimeout(() => resolve(), ms));
 }
 
+const NOTIFY_ID: number = 1001;
+
+/** 连接成功通知（基础通知；未授权/失败静默，不影响连接流程） */
+async function publishConnectedNotification(nodeName: string): Promise<void> {
+  try {
+    const content: notificationManager.NotificationContent = {
+      notificationContentType: notificationManager.ContentType.NOTIFICATION_CONTENT_BASIC_TEXT,
+      normal: {
+        title: 'v2rayNG 已连接',
+        text: nodeName,
+        additionalText: '',
+      },
+    };
+    const req: notificationManager.NotificationRequest = {
+      id: NOTIFY_ID,
+      content: content,
+    };
+    await notificationManager.publish(req);
+  } catch (e) {
+    // 通知未授权或系统拒绝时静默（不记错误日志，避免噪音）
+  }
+}
+
+function cancelConnectedNotification(): void {
+  try {
+    notificationManager.cancel(NOTIFY_ID).catch(() => {
+      // 忽略
+    });
+  } catch (e) {
+    // 忽略
+  }
+}
+
 export class ConnectManager {
   static async connect(): Promise<string> {
     const selected = ServerStore.getSelected();
@@ -111,6 +145,9 @@ export class ConnectManager {
       const st: VpnStatus = readStatus();
       if (st.state === 'running') {
         LogStore.push('连接', '已连接');
+        publishConnectedNotification(selected.profile.remarks).catch(() => {
+          // 忽略
+        });
         return '';
       }
       if (st.state === 'error') {
@@ -125,6 +162,7 @@ export class ConnectManager {
 
   static disconnect(): void {
     VpnService.disconnect();
+    cancelConnectedNotification();
     LogStore.push('连接', '已断开');
   }
 

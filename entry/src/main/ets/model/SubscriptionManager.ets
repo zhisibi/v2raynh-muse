@@ -130,6 +130,36 @@ export class SubscriptionManager {
     persist();
   }
 
+  /** 备份恢复：整体替换订阅列表（入参为 JSON 解析出的普通对象数组，只做字段消毒） */
+  static restoreAll(rawSubs: Object[]): number {
+    const out: Subscription[] = [];
+    for (let i = 0; i < rawSubs.length; i++) {
+      const o: Record<string, Object> = rawSubs[i] as Object as Record<string, Object>;
+      const url: string = String(o['url'] ?? '');
+      if (url.length === 0) continue;
+      const num = (v: Object | undefined, dflt: number): number => {
+        const n: number = Number(v ?? dflt);
+        return isNaN(n) ? dflt : n;
+      };
+      const sub: Subscription = {
+        id: String(o['id'] ?? genId()),
+        name: String(o['name'] ?? url),
+        url: url,
+        enabled: Boolean(o['enabled'] ?? true),
+        lastUpdate: num(o['lastUpdate'], 0),
+        nodeCount: num(o['nodeCount'], 0),
+        expireAt: num(o['expireAt'], 0),
+        upload: num(o['upload'], 0),
+        download: num(o['download'], 0),
+        total: num(o['total'], 0),
+      };
+      out.push(sub);
+    }
+    cache = out;
+    persist();
+    return out.length;
+  }
+
   /** 拉取并刷新单个订阅；返回新增节点数，失败抛错 */
   static async refresh(id: string): Promise<number> {
     const subs: Subscription[] = loadAll();

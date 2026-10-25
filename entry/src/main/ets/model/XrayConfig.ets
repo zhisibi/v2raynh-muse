@@ -6,6 +6,28 @@ import { ProfileItem } from './UriParser';
 
 export type RoutingMode = 'rule' | 'global' | 'direct';
 
+/** 自定义路由规则（路由设置页编辑，每组多行文本，一行一条，geosite:/geoip: 前缀原样透传） */
+export interface CustomRules {
+  directDomain: string;
+  proxyDomain: string;
+  blockDomain: string;
+  directIp: string;
+  proxyIp: string;
+}
+
+export function defaultCustomRules(): CustomRules {
+  const r: CustomRules = {
+    directDomain: '',
+    proxyDomain: '',
+    blockDomain: '',
+    directIp: '',
+    proxyIp: '',
+  };
+  return r;
+}
+
+export type ThemeMode = 'system' | 'light' | 'dark';
+
 export interface AppSettings {
   socksPort: number;
   httpPort: number;
@@ -22,6 +44,12 @@ export interface AppSettings {
   perAppMode: 'off' | 'block' | 'allow';
   /** 名单：包名逗号分隔，如 com.example.app,com.example.browser */
   perAppList: string;
+  /** 自定义路由规则（路由设置页，插到模式规则之前） */
+  customRules: CustomRules;
+  /** 界面主题：跟随系统 / 浅色 / 深色 */
+  themeMode: ThemeMode;
+  /** 启动应用时自动连接上次选中节点 */
+  autoConnect: boolean;
 }
 
 export function defaultSettings(): AppSettings {
@@ -39,6 +67,9 @@ export function defaultSettings(): AppSettings {
     logLevel: 'warning',
     perAppMode: 'off',
     perAppList: '',
+    customRules: defaultCustomRules(),
+    themeMode: 'system',
+    autoConnect: false,
   };
   return s;
 }
@@ -56,6 +87,17 @@ type JsonObj = Record<string, Object>;
 function splitCsv(s: string): string[] {
   const out: string[] = [];
   const parts: string[] = s.split(',');
+  for (let i = 0; i < parts.length; i++) {
+    const t: string = parts[i].trim();
+    if (t.length > 0) out.push(t);
+  }
+  return out;
+}
+
+/** 多行文本拆条目：逐行 trim、去空行（自定义规则用） */
+function splitLines(s: string): string[] {
+  const out: string[] = [];
+  const parts: string[] = s.split('\n');
   for (let i = 0; i < parts.length; i++) {
     const t: string = parts[i].trim();
     if (t.length > 0) out.push(t);
@@ -486,6 +528,19 @@ export function buildXrayConfig(p: ProfileItem, s: AppSettings): string {
   moduleRule['inboundTag'] = ['dns-module'];
   moduleRule['outboundTag'] = 'proxy';
   rules.push(moduleRule);
+  // 自定义规则（路由设置页）：插到模式规则之前，顺序 拦截→直连→代理；
+  // 域名组生成 domain 规则、IP 组生成 ip 规则，geosite:/geoip: 前缀原样透传。
+  const cr: CustomRules = s.customRules;
+  const blockDomains: string[] = splitLines(cr.blockDomain);
+  if (blockDomains.length > 0) addRule('block', [], blockDomains, '');
+  const directDomains: string[] = splitLines(cr.directDomain);
+  if (directDomains.length > 0) addRule('direct', [], directDomains, '');
+  const proxyDomains: string[] = splitLines(cr.proxyDomain);
+  if (proxyDomains.length > 0) addRule('proxy', [], proxyDomains, '');
+  const directIps: string[] = splitLines(cr.directIp);
+  if (directIps.length > 0) addRule('direct', directIps, [], '');
+  const proxyIps: string[] = splitLines(cr.proxyIp);
+  if (proxyIps.length > 0) addRule('proxy', proxyIps, [], '');
   if (s.routingMode === 'global') {
     addRule('proxy', ['0.0.0.0/0', '::/0'], [], '');
   } else if (s.routingMode === 'direct') {

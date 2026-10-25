@@ -1,7 +1,7 @@
 // v2rayNG Harmony · 应用设置（Preferences 持久化）
 import { preferences } from '@kit.ArkData';
-import { Context } from '@kit.AbilityKit';
-import { AppSettings, defaultSettings, RoutingMode } from './XrayConfig';
+import { ConfigurationConstant, Context } from '@kit.AbilityKit';
+import { AppSettings, CustomRules, defaultCustomRules, defaultSettings, RoutingMode } from './XrayConfig';
 
 const PREF_NAME = 'v2rayng_settings';
 
@@ -21,6 +21,19 @@ function getPref(): preferences.Preferences | undefined {
   }
 }
 
+function copyCustomRules(r: CustomRules | undefined): CustomRules {
+  const d: CustomRules = defaultCustomRules();
+  if (r === undefined) return d;
+  const out: CustomRules = {
+    directDomain: typeof r.directDomain === 'string' ? r.directDomain : '',
+    proxyDomain: typeof r.proxyDomain === 'string' ? r.proxyDomain : '',
+    blockDomain: typeof r.blockDomain === 'string' ? r.blockDomain : '',
+    directIp: typeof r.directIp === 'string' ? r.directIp : '',
+    proxyIp: typeof r.proxyIp === 'string' ? r.proxyIp : '',
+  };
+  return out;
+}
+
 function copySettings(s: AppSettings): AppSettings {
   const mode: RoutingMode =
     s.routingMode === 'global' || s.routingMode === 'direct' ? s.routingMode : 'rule';
@@ -38,6 +51,9 @@ function copySettings(s: AppSettings): AppSettings {
     logLevel: s.logLevel,
     perAppMode: s.perAppMode === 'block' || s.perAppMode === 'allow' ? s.perAppMode : 'off',
     perAppList: s.perAppList,
+    customRules: copyCustomRules(s.customRules),
+    themeMode: s.themeMode === 'light' || s.themeMode === 'dark' ? s.themeMode : 'system',
+    autoConnect: s.autoConnect === true,
   };
   return out;
 }
@@ -64,6 +80,14 @@ export class SettingsStore {
         const pm: string = p.getSync('perAppMode', 'off') as string;
         s.perAppMode = (pm === 'block' || pm === 'allow') ? pm : 'off';
         s.perAppList = p.getSync('perAppList', '') as string;
+        s.customRules.directDomain = p.getSync('crDirectDomain', '') as string;
+        s.customRules.proxyDomain = p.getSync('crProxyDomain', '') as string;
+        s.customRules.blockDomain = p.getSync('crBlockDomain', '') as string;
+        s.customRules.directIp = p.getSync('crDirectIp', '') as string;
+        s.customRules.proxyIp = p.getSync('crProxyIp', '') as string;
+        const tm: string = p.getSync('themeMode', 'system') as string;
+        s.themeMode = (tm === 'light' || tm === 'dark') ? tm : 'system';
+        s.autoConnect = p.getSync('autoConnect', false) as boolean;
       } catch (e) {
         // 使用默认值
       }
@@ -90,9 +114,31 @@ export class SettingsStore {
       p.putSync('logLevel', s.logLevel);
       p.putSync('perAppMode', s.perAppMode);
       p.putSync('perAppList', s.perAppList);
+      const cr: CustomRules = copyCustomRules(s.customRules);
+      p.putSync('crDirectDomain', cr.directDomain);
+      p.putSync('crProxyDomain', cr.proxyDomain);
+      p.putSync('crBlockDomain', cr.blockDomain);
+      p.putSync('crDirectIp', cr.directIp);
+      p.putSync('crProxyIp', cr.proxyIp);
+      p.putSync('themeMode', s.themeMode);
+      p.putSync('autoConnect', s.autoConnect);
       p.flush();
     } catch (e) {
       // 忽略持久化失败
+    }
+  }
+
+  /** 按 themeMode 应用颜色模式到整个应用（ApplicationContext.setColorMode） */
+  static applyColorMode(ctx: Context): void {
+    try {
+      const mode: string = SettingsStore.get().themeMode;
+      const cm: ConfigurationConstant.ColorMode =
+        mode === 'dark' ? ConfigurationConstant.ColorMode.COLOR_MODE_DARK :
+          (mode === 'light' ? ConfigurationConstant.ColorMode.COLOR_MODE_LIGHT :
+            ConfigurationConstant.ColorMode.COLOR_MODE_NOT_SET);
+      ctx.getApplicationContext().setColorMode(cm);
+    } catch (e) {
+      // SDK 不支持时忽略（重启后由系统主题决定）
     }
   }
 }

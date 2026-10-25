@@ -222,6 +222,44 @@ assert(Number(hySet2['version']) === 2, 'xray hy2 version=2');
     '仅代理模式次条规则 dns-module->proxy');
 }
 
+// 自定义路由规则（v1.2.0 路由设置页）：插到模式规则之前，顺序 拦截→直连→代理（域名组在前、IP 组在后）
+{
+  const cSettings: AppSettings = defaultSettings();
+  cSettings.customRules.blockDomain = 'ads.example.com\n  geosite:category-ads  ';
+  cSettings.customRules.directDomain = 'corp.example.com';
+  cSettings.customRules.proxyDomain = 'geosite:google';
+  cSettings.customRules.directIp = '198.51.100.0/24';
+  cSettings.customRules.proxyIp = '192.0.2.0/24\ngeoip:telegram';
+  const cCfg: Record<string, Object> = JSON.parse(buildXrayConfig(vl, cSettings)) as Record<string, Object>;
+  const cRouting: Record<string, Object> = cCfg['routing'] as Object as Record<string, Object>;
+  const cRules: Array<Record<string, Object>> = cRouting['rules'] as Object as Array<Record<string, Object>>;
+  // 前三条仍是 DNS 架构规则（tun 劫持/domestic/module），自定义规则紧随其后
+  const dom = (r: Record<string, Object>): string[] =>
+    (r['domain'] as Object as Object[]).map((x: Object) => String(x));
+  const ips = (r: Record<string, Object>): string[] =>
+    (r['ip'] as Object as Object[]).map((x: Object) => String(x));
+  assert(String(cRules[3]['outboundTag']) === 'block' && dom(cRules[3]).indexOf('ads.example.com') >= 0 &&
+    dom(cRules[3]).indexOf('geosite:category-ads') >= 0, '自定义拦截域名规则（trim+透传）');
+  assert(String(cRules[4]['outboundTag']) === 'direct' && dom(cRules[4]).indexOf('corp.example.com') >= 0,
+    '自定义直连域名规则');
+  assert(String(cRules[5]['outboundTag']) === 'proxy' && dom(cRules[5]).indexOf('geosite:google') >= 0,
+    '自定义代理域名规则');
+  assert(String(cRules[6]['outboundTag']) === 'direct' && ips(cRules[6]).indexOf('198.51.100.0/24') >= 0,
+    '自定义直连 IP 规则');
+  assert(String(cRules[7]['outboundTag']) === 'proxy' && ips(cRules[7]).indexOf('192.0.2.0/24') >= 0 &&
+    ips(cRules[7]).indexOf('geoip:telegram') >= 0, '自定义代理 IP 规则');
+  // 自定义规则在模式规则之前：rule 模式首条模式规则是 geoip:private -> direct
+  assert(ips(cRules[8]).indexOf('geoip:private') >= 0 && String(cRules[8]['outboundTag']) === 'direct',
+    '自定义规则位于模式规则之前');
+  // 空行/空组不产生规则：仅设置一组时总数 = 3(DNS) + 1 + 5(模式 rule)
+  const oneSettings: AppSettings = defaultSettings();
+  oneSettings.customRules.proxyDomain = '\n  \nexample.org\n';
+  const oCfg: Record<string, Object> = JSON.parse(buildXrayConfig(vl, oneSettings)) as Record<string, Object>;
+  const oRouting: Record<string, Object> = oCfg['routing'] as Object as Record<string, Object>;
+  const oRules: Array<Record<string, Object>> = oRouting['rules'] as Object as Array<Record<string, Object>>;
+  assert(oRules.length === 9, '自定义规则空组不生成规则');
+}
+
 // 全局模式
 const gSettings: AppSettings = defaultSettings();
 gSettings.routingMode = 'global';

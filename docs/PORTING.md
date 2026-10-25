@@ -94,3 +94,20 @@
 | 流量失败标记 | 同上 | XrayTraffic 三个失败分支返回 {"error":"no-instance"/"no-feature"/"bad-type"} |
 | xray 日志并入诊断 | `vpnextension/V2RayVpnExtension.dumpXrayLogTail` | 9 秒探针在 hev.log 尾部后追加 xray_error.log 尾部约 30 行（[xray.log] 前缀） |
 | 冒烟断言 | `tests/smoke-main.ts` | dns.tag/servers[0].tag/规则前三条/无 catch-all/dns 出站唯一，74 项全过；官方二进制 run -test Configuration OK |
+
+## v1.2.0 对齐对照
+
+界面与功能对齐安卓版 v2rayNG（核心链路未动：XrayConfig 的 DNS 架构、VpnExtension、Go 桥、C 桥行为不变，唯一例外是自定义规则注入点）。
+
+| 安卓版 | 鸿蒙实现 | 说明 |
+|---|---|---|
+| MainActivity 单页（顶栏+分组标签+列表+底部栏） | `pages/Index.ets` | 原四 Tab（components/HomeTab/ServersTab/SubsTab/MineTab）取消并删除：ServersTab 列表逻辑并入 Index，HomeTab 连接/流量/测试逻辑迁入 Index 底部栏 |
+| 订阅设置页 | `pages/SubscriptionsPage.ets` | 由 SubsTab 迁移为独立页；域名由 URL 解析，subscription-userinfo 用量行，更新全部带进度文本 |
+| SettingsActivity | `pages/SettingsPage.ets` | 由 MineTab 迁移：核心/VPN/订阅/界面/高级五组；geo 在线更新、coreVersion 运行时显示 |
+| RoutingSettingActivity | `pages/RoutingPage.ets` | 模式三段与 customRules 五组文本（直连/代理/拦截域名、直连/代理 IP），存 SettingsStore 新字段 |
+| 自定义规则注入 | `model/XrayConfig.buildXrayConfig` | 插到 DNS 三段规则之后、模式规则之前，顺序 拦截→直连→代理（域名组生成 domain 规则、IP 组生成 ip 规则），geosite:/geoip: 透传；冒烟新增 7 条断言锁定位置与 outboundTag，官方 Xray 二进制 run -test 复验 Configuration OK |
+| 二维码分享 | `pages/QrSharePage.ets` | `@kit.ScanKit` generateBarcode.createBarcode 真实生成 PixelMap；失败降级 toast+复制链接 |
+| BackupActivity | `pages/BackupPage.ets` | JSON{version,selectedId,servers,subscriptions,settings}，DocumentViewPicker 保存/选择文件 + 剪贴板双通道，恢复二次确认整体替换；Store 补 ServerStore.snapshotRaw/restoreRaw、SubscriptionManager.restoreAll，持久化 key 不变 |
+| 连接通知 | `service/ConnectManager` | connect 成功后 NotificationKit publish 基础通知（id 1001，标题「v2rayNG 已连接」+节点名），disconnect 时 cancel；失败静默，未加额外权限声明 |
+| 主题/自动连接 | `model/SettingsStore.applyColorMode` + `entryability/EntryAbility` | themeMode 存设置，onCreate 按之 setColorMode；autoConnect 开且有选中节点时 loadContent 后自动 connect，失败只记日志 |
+| 策略组/代理链、root 模式、QS 磁贴/小部件、Tasker、完整 i18n、WebDAV | 未移植 | 鸿蒙无对应机制或超出基础对齐范围，如实记录 |

@@ -31,7 +31,7 @@ function genId(): string {
   return 'n' + Date.now().toString(36) + Math.floor(Math.random() * 1e6).toString(36);
 }
 
-interface StoredNode {
+export interface StoredNode {
   id: string;
   profile: ProfileItem;
   delay: number;
@@ -198,6 +198,42 @@ export class ServerStore {
   /** 备份导出：全部节点 JSON */
   static exportJson(): string {
     return JSON.stringify(ServerStore.getEntries(), null, 2);
+  }
+
+  /** 备份快照（原始存储形态：id/profile/delay），供备份与恢复页整体导出 */
+  static snapshotRaw(): StoredNode[] {
+    const nodes: ProfileItem[] = loadAll();
+    const out: StoredNode[] = [];
+    for (let i = 0; i < nodes.length; i++) {
+      const sn: StoredNode = { id: ids[i], profile: nodes[i], delay: Number(delays[ids[i]] ?? -1) };
+      out.push(sn);
+    }
+    return out;
+  }
+
+  /** 备份恢复：整体替换全部节点（入参为 JSON 解析出的普通对象数组），返回恢复条数 */
+  static restoreRaw(rawNodes: Object[], selected: string): number {
+    const newCache: ProfileItem[] = [];
+    const newIds: string[] = [];
+    const newDelays: Record<string, number> = {};
+    for (let i = 0; i < rawNodes.length; i++) {
+      const holder: Record<string, Object> = rawNodes[i] as Object as Record<string, Object>;
+      const profObj: Object | undefined = holder['profile'];
+      if (profObj === undefined) continue;
+      const prof: ProfileItem = profileFromJson(profObj as Object as Record<string, Object>);
+      let id: string = String(holder['id'] ?? '');
+      if (id.length === 0 || newIds.indexOf(id) >= 0) id = genId();
+      newCache.push(prof);
+      newIds.push(id);
+      const d: number = Number(holder['delay'] ?? -1);
+      newDelays[id] = isNaN(d) ? -1 : d;
+    }
+    cache = newCache;
+    ids = newIds;
+    delays = newDelays;
+    selectedId = newIds.indexOf(selected) >= 0 ? selected : '';
+    persist();
+    return newCache.length;
   }
 
   static importProfiles(profiles: ProfileItem[]): number {

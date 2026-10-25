@@ -27,7 +27,8 @@ struct RoutingPage {
     this.proxyIp = cr.proxyIp;
   }
 
-  save(): void {
+  /** 整页收集并落盘（v1.2.2：模式切换即时存、规则编辑离开页面兜底存） */
+  private persist(): void {
     const s: AppSettings = SettingsStore.get();
     s.routingMode = this.mode;
     const cr: CustomRules = defaultCustomRules();
@@ -38,7 +39,16 @@ struct RoutingPage {
     cr.proxyIp = this.proxyIp;
     s.customRules = cr;
     SettingsStore.save(s);
+  }
+
+  save(): void {
+    this.persist();
     promptAction.showToast({ message: '路由设置已保存（重连后生效）' });
+  }
+
+  /** 离开页面兜底静默保存（v1.2.2）：五个规则编辑器只改 @State，不兜底就全丢 */
+  aboutToDisappear(): void {
+    this.persist();
   }
 
   @Builder segBtn(label: string, value: RoutingMode) {
@@ -50,6 +60,7 @@ struct RoutingPage {
       .backgroundColor(this.mode === value ? Pal.accent : Pal.chip)
       .onClick(() => {
         this.mode = value;
+        this.persist();
       });
   }
 

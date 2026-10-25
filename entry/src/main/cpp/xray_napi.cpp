@@ -294,19 +294,25 @@ static napi_value TestDelay(napi_env env, napi_callback_info info) {
     return result;
 }
 
-// ---- startTun(socksPort, mtu, logDir): boolean ----
+// ---- startTun(socksPort, mtu, logDir, ipv6): boolean ----
 // 从模板 fd dup 一份交给 hev；hev 配置 YAML 与 V2RayVpnExtension 的 TUN 地址保持一致。
 // v1.1.1：第三个参数 logDir（filesDir）——拼出 <logDir>/hev.log 后 setenv
 // HEV_LOG_PATH，hev adapter 线程据此把 stderr（debug 日志）重定向落盘。
+// v1.2.2：第四个参数 ipv6（缺省 true）——false 时 yaml 不带 ipv6 行，
+// 与扩展侧 VpnConfig 仅 v4 的形态一致（设置里 IPv6 开关的全链路末端）。
 static napi_value StartTun(napi_env env, napi_callback_info info) {
-    size_t argc = 3;
-    napi_value args[3] = {nullptr, nullptr, nullptr};
+    size_t argc = 4;
+    napi_value args[4] = {nullptr, nullptr, nullptr, nullptr};
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
     int32_t socksPort = 10808;
     int32_t mtu = 1500;
+    bool ipv6 = true;
     if (argc >= 2) {
         napi_get_value_int32(env, args[0], &socksPort);
         napi_get_value_int32(env, args[1], &mtu);
+    }
+    if (argc >= 4) {
+        napi_get_value_bool(env, args[3], &ipv6);
     }
     if (argc >= 3) {
         std::string logDir;
@@ -333,19 +339,35 @@ static napi_value StartTun(napi_env env, napi_callback_info info) {
     // 字段与上游 conf/main.yml 及安卓 v2rayNG 生成的 hev 配置对齐：
     // tunnel.name（外部 fd 时仅占位）、mtu、ipv4/ipv6 与 VpnConfig 的 TUN 地址一致；
     // socks5 指向 Xray 的 socks 入站（udp 走 udp 关联）。
-    std::snprintf(yaml, sizeof(yaml),
-                  "tunnel:\n"
-                  "  name: tun0\n"
-                  "  mtu: %d\n"
-                  "  ipv4: 172.19.0.1\n"
-                  "  ipv6: 'fdfe:dcba:9876::1'\n"
-                  "socks5:\n"
-                  "  port: %d\n"
-                  "  address: 127.0.0.1\n"
-                  "  udp: udp\n"
-                  "misc:\n"
-                  "  log-level: debug\n",
-                  mtu, socksPort);
+    // ipv6=false 时去掉 ipv6 一行，其余不变（v1.2.2）。
+    if (ipv6) {
+        std::snprintf(yaml, sizeof(yaml),
+                      "tunnel:\n"
+                      "  name: tun0\n"
+                      "  mtu: %d\n"
+                      "  ipv4: 172.19.0.1\n"
+                      "  ipv6: 'fdfe:dcba:9876::1'\n"
+                      "socks5:\n"
+                      "  port: %d\n"
+                      "  address: 127.0.0.1\n"
+                      "  udp: udp\n"
+                      "misc:\n"
+                      "  log-level: debug\n",
+                      mtu, socksPort);
+    } else {
+        std::snprintf(yaml, sizeof(yaml),
+                      "tunnel:\n"
+                      "  name: tun0\n"
+                      "  mtu: %d\n"
+                      "  ipv4: 172.19.0.1\n"
+                      "socks5:\n"
+                      "  port: %d\n"
+                      "  address: 127.0.0.1\n"
+                      "  udp: udp\n"
+                      "misc:\n"
+                      "  log-level: debug\n",
+                      mtu, socksPort);
+    }
     // 注意：hev 以阻塞方式跑事件循环的版本需放独立线程；本桥约定 HevTunnelStart
     // 内部自建工作线程并立即返回（见 build-hevtun.sh 适配层说明）。
     const int rc = g_hev_start(yaml, tunFd);

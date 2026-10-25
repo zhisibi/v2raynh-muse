@@ -1,13 +1,14 @@
 // v2rayNG Harmony · 应用设置页（对齐安卓 SettingsActivity 分组）
 // 核心设置 / VPN 设置 / 订阅设置 / 界面设置（主题+启动自动连接）/ 高级（geo 更新、核心版本）
 import { router, promptAction } from '@kit.ArkUI';
+import { common, ConfigurationConstant } from '@kit.AbilityKit';
 import { http } from '@kit.NetworkKit';
 import { fileIo as fs } from '@kit.CoreFileKit';
 import { SettingsStore } from '../model/SettingsStore';
 import { AppSettings, ThemeMode } from '../model/XrayConfig';
 import { coreVersion } from '../model/CoreBridge';
 import { assetDirPath } from '../model/AssetInstaller';
-import { Pal, fmtBytes } from '../components/Ui';
+import { Pal, applyPalette, fmtBytes, resolveDark } from '../components/Ui';
 
 const GEOIP_URL: string =
   'https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat';
@@ -122,10 +123,34 @@ struct SettingsPage {
     return s;
   }
 
-  save(msgText: string = '设置已保存（重连后生效）'): void {
+  save(msgText: string = '设置已保存（连接类设置重连后生效）'): void {
     SettingsStore.save(this.collect());
     this.msg = msgText;
     promptAction.showToast({ message: '设置已保存' });
+  }
+
+  /**
+   * 即时静默保存（v1.2.2）：开关/分段一改就落盘。此前所有控件只改 @State、
+   * 仅点「保存」或输入回车才写 SettingsStore，拨完开关直接返回即全丢弃，
+   * 真机表现为「设置点了不起作用」。静默版不弹 toast，只更新页内 msg。
+   */
+  private silentSave(): void {
+    SettingsStore.save(this.collect());
+    this.msg = '已保存 · 连接类设置重连后生效';
+  }
+
+  /** 离开页面兜底（v1.2.2）：输入框未回车的改动也在此落盘，不弹 toast */
+  aboutToDisappear(): void {
+    SettingsStore.save(this.collect());
+  }
+
+  /** 主题生效（v1.2.2）：系统颜色模式 + 自绘调色板 Pal 一起换，界面才真的变色 */
+  private applyTheme(): void {
+    SettingsStore.applyColorMode(getContext(this));
+    const ctx = getContext(this) as common.UIAbilityContext;
+    const sysDark: boolean =
+      ctx.config.colorMode === ConfigurationConstant.ColorMode.COLOR_MODE_DARK;
+    applyPalette(resolveDark(this.themeMode, sysDark));
   }
 
   async updateGeo(): Promise<void> {
@@ -239,31 +264,31 @@ struct SettingsPage {
           Row() {
             Text('日志等级').fontSize(14).fontColor(Pal.text).layoutWeight(1);
             Row({ space: 6 }) {
-              this.segBtn('warning', this.logLevel === 'warning', () => { this.logLevel = 'warning'; });
-              this.segBtn('info', this.logLevel === 'info', () => { this.logLevel = 'info'; });
-              this.segBtn('error', this.logLevel === 'error', () => { this.logLevel = 'error'; });
+              this.segBtn('warning', this.logLevel === 'warning', () => { this.logLevel = 'warning'; this.silentSave(); });
+              this.segBtn('info', this.logLevel === 'info', () => { this.logLevel = 'info'; this.silentSave(); });
+              this.segBtn('error', this.logLevel === 'error', () => { this.logLevel = 'error'; this.silentSave(); });
             }
           }
           .width('100%').padding({ top: 6, bottom: 6 });
           this.switchRow('流量嗅探', '识别 http/tls 域名用于规则分流', this.sniffing,
-            (v: boolean) => { this.sniffing = v; });
+            (v: boolean) => { this.sniffing = v; this.silentSave(); });
           this.switchRow('UDP 转发', 'SOCKS/HTTP 入站的 UDP 支持', this.enableUdp,
-            (v: boolean) => { this.enableUdp = v; });
+            (v: boolean) => { this.enableUdp = v; this.silentSave(); });
           this.textRow('本地 DNS', this.localDns, (v: string) => { this.localDns = v; });
           this.textRow('远程 DNS', this.remoteDns, (v: string) => { this.remoteDns = v; });
 
           // ---- VPN 设置 ----
           this.groupTitle('VPN 设置');
-          this.switchRow('TUN 模式', '经系统 VPN 接管全局流量（关则仅代理）', this.tun,
-            (v: boolean) => { this.tun = v; });
-          this.switchRow('IPv6 路由', 'TUN 下同时接管 IPv6 并防 DNS 泄漏', this.ipv6,
-            (v: boolean) => { this.ipv6 = v; });
+          this.switchRow('TUN 模式', '经系统 VPN 接管全局流量，关则仅代理（重连后生效）', this.tun,
+            (v: boolean) => { this.tun = v; this.silentSave(); });
+          this.switchRow('IPv6 路由', 'TUN 下同时接管 IPv6 并防 DNS 泄漏（重连后生效）', this.ipv6,
+            (v: boolean) => { this.ipv6 = v; this.silentSave(); });
           Row() {
             Text('按应用代理').fontSize(14).fontColor(Pal.text).layoutWeight(1);
             Row({ space: 6 }) {
-              this.segBtn('关闭', this.perAppMode === 'off', () => { this.perAppMode = 'off'; });
-              this.segBtn('黑名单', this.perAppMode === 'block', () => { this.perAppMode = 'block'; });
-              this.segBtn('仅名单', this.perAppMode === 'allow', () => { this.perAppMode = 'allow'; });
+              this.segBtn('关闭', this.perAppMode === 'off', () => { this.perAppMode = 'off'; this.silentSave(); });
+              this.segBtn('黑名单', this.perAppMode === 'block', () => { this.perAppMode = 'block'; this.silentSave(); });
+              this.segBtn('仅名单', this.perAppMode === 'allow', () => { this.perAppMode = 'allow'; this.silentSave(); });
             }
           }
           .width('100%').padding({ top: 6, bottom: 6 });
@@ -288,17 +313,17 @@ struct SettingsPage {
               this.segBtn('跟随系统', this.themeMode === 'system', () => {
                 this.themeMode = 'system';
                 this.save('主题已保存');
-                SettingsStore.applyColorMode(getContext(this));
+                this.applyTheme();
               });
               this.segBtn('浅色', this.themeMode === 'light', () => {
                 this.themeMode = 'light';
                 this.save('主题已保存');
-                SettingsStore.applyColorMode(getContext(this));
+                this.applyTheme();
               });
               this.segBtn('深色', this.themeMode === 'dark', () => {
                 this.themeMode = 'dark';
                 this.save('主题已保存');
-                SettingsStore.applyColorMode(getContext(this));
+                this.applyTheme();
               });
             }
           }
@@ -306,7 +331,7 @@ struct SettingsPage {
           Text('主题切换即时对本应用生效；若个别页面未刷新，重启应用即可。')
             .fontSize(11).fontColor(Pal.sub);
           this.switchRow('启动时自动连接', '打开应用后自动连接上次选中的节点', this.autoConnect,
-            (v: boolean) => { this.autoConnect = v; });
+            (v: boolean) => { this.autoConnect = v; this.silentSave(); });
 
           // ---- 高级 ----
           this.groupTitle('高级');
@@ -339,7 +364,7 @@ struct SettingsPage {
           if (this.msg.length > 0) {
             Text(this.msg).fontSize(12).fontColor(Pal.accent).margin({ top: 12 });
           }
-          Text('v2rayNG Harmony 1.2.1 (105)').fontSize(11).fontColor(Pal.sub)
+          Text('v2rayNG Harmony 1.2.2 (106)').fontSize(11).fontColor(Pal.sub)
             .margin({ top: 14, bottom: 20 });
         }
         .width('100%').alignItems(HorizontalAlign.Start)

@@ -68,12 +68,14 @@ func snapshotInstance() (*core.Instance, string) {
 	return instance, runningConfig
 }
 
-// rewriteLogConfig 在 LoadConfig 前改写 config 的 log 段（v1.1.2）：
-// loglevel 为 warning/error（或缺失）时提升为 info，让真机故障能在
-// xray_error.log 里留下出站/DNS 的实际报错；error 日志落盘到
-// assetDir/xray_error.log（扩展探针会把尾部并入 vpn_diag 回传）；
-// access 设为空字符串禁用访问日志防爆盘。解析/改写任何一步失败都
-// 返回原 config，绝不阻断启动。
+// rewriteLogConfig 在 LoadConfig 前改写 config 的 log 段：
+// v1.2.2 起尊重用户在设置里选的 loglevel（warning/info/error 原样透传，
+// 仅缺失时补 "warning")——v1.1.2 曾把 warning/error 强升 info 做真机诊断，
+// 导致日志等级三档变一档「选了不起作用」，已废止；默认 warning 在 Xray
+// 里已包含 error 级记录，出站/DNS 的实际报错仍可落盘供诊断。
+// error 日志落盘到 assetDir/xray_error.log（扩展探针会把尾部并入
+// vpn_diag 回传）；access 设为空字符串禁用访问日志防爆盘。
+// 解析/改写任何一步失败都返回原 config，绝不阻断启动。
 func rewriteLogConfig(cfg string, assetDir string) string {
 	var root map[string]interface{}
 	if err := json.Unmarshal([]byte(cfg), &root); err != nil {
@@ -84,8 +86,8 @@ func rewriteLogConfig(cfg string, assetDir string) string {
 		logObj = map[string]interface{}{}
 	}
 	level, _ := logObj["loglevel"].(string)
-	if level == "" || level == "warning" || level == "error" {
-		logObj["loglevel"] = "info"
+	if level == "" {
+		logObj["loglevel"] = "warning"
 	}
 	if assetDir != "" {
 		logObj["error"] = filepath.Join(assetDir, "xray_error.log")
@@ -128,7 +130,7 @@ func XrayStart(configJSON *C.char, assetDir *C.char) C.int {
 		lastErr = "empty config"
 		return 1
 	}
-	// v1.1.2：提升 loglevel 并把 error 日志落盘 xray_error.log（见 rewriteLogConfig）
+	// v1.2.2：log 段改写（尊重用户 loglevel、error 落盘 xray_error.log，见 rewriteLogConfig）
 	cfg = rewriteLogConfig(cfg, asset)
 	// 以 JSON 格式加载配置（对应 core.LoadConfig("json", reader)）
 	loaded, err := core.LoadConfig("json", bytes.NewReader([]byte(cfg)))

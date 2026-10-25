@@ -156,7 +156,7 @@ export class ConnectManager {
       // 不存在则忽略
     }
     try {
-      await VpnService.connect(settings.tunEnabled);
+      await VpnService.connect(settings.tunEnabled, settings.ipv6Enabled);
     } catch (e) {
       return '拉起 VPN 扩展失败: ' + (e instanceof Error ? e.message : String(e));
     }

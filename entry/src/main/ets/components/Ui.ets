@@ -16,6 +16,39 @@ export class Pal {
   static line: string = '#DCE6EC';
 }
 
+/**
+ * 主题调色板（v1.2.2）：界面颜色全部走 Pal 自绘，系统 setColorMode 管不到，
+ * 此前切深色主题界面纹丝不动。主题变化时由 EntryAbility / 设置页调用本函数
+ * 同步换 Pal 值；accent/good/warn/bad 两套共用。已构建的页面靠 @State 变化
+ * 触发重渲染后读到新值（Index 靠 onPageShow 的 rev++）。
+ */
+export function applyPalette(dark: boolean): void {
+  if (dark) {
+    Pal.bg = '#12181D';
+    Pal.card = '#1C262E';
+    Pal.text = '#E8F0F4';
+    Pal.sub = '#93A7B1';
+    Pal.accentSoft = '#1E3448';
+    Pal.chip = '#26343E';
+    Pal.line = '#2E414D';
+  } else {
+    Pal.bg = '#FFFFFF';
+    Pal.card = '#F5F7FA';
+    Pal.text = '#12242C';
+    Pal.sub = '#5B6D74';
+    Pal.accentSoft = '#E3F0FA';
+    Pal.chip = '#E7EEF3';
+    Pal.line = '#DCE6EC';
+  }
+}
+
+/** 由 themeMode 与系统当前是否深色，解析最终是否用深色调色板 */
+export function resolveDark(mode: string, systemDark: boolean): boolean {
+  if (mode === 'dark') return true;
+  if (mode === 'light') return false;
+  return systemDark;
+}
+
 export function fmtBytes(n: number): string {
   if (n < 1024) return n + ' B';
   if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';

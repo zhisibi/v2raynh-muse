@@ -24,6 +24,7 @@ const STATUS_FILE = 'vpn_status.json';
 const TRAFFIC_FILE = 'vpn_traffic.json';
 const PERAPP_FILE = 'vpn_perapp.json';
 const PARAM_MODE = 'v2rayng_mode';
+const PARAM_IPV6 = 'v2rayng_ipv6';
 const MTU = 1500;
 
 interface PerAppFile {
@@ -66,6 +67,7 @@ function logError(msg: string): void {
 export default class V2RayVpnExtension extends VpnExtensionAbility {
   private connection: vpnExtension.VpnConnection | undefined = undefined;
   private tunMode: boolean = true;
+  private ipv6Enabled: boolean = true;
   private currentStep: string = '';
   private trafficTimer: number = -1;
 
@@ -74,8 +76,11 @@ export default class V2RayVpnExtension extends VpnExtensionAbility {
     if (params !== undefined) {
       const mode: Object | undefined = params[PARAM_MODE];
       this.tunMode = mode === undefined || String(mode) !== 'proxy';
+      // v1.2.2：IPv6 设置由 UI 经 want 传入（此前扩展读不到该设置、恒双栈）
+      const v6: Object | undefined = params[PARAM_IPV6];
+      this.ipv6Enabled = v6 === undefined || String(v6) !== '0';
     }
-    this.diag('onCreate mode=' + (this.tunMode ? 'tun' : 'proxy'));
+    this.diag('onCreate mode=' + (this.tunMode ? 'tun' : 'proxy') + ' ipv6=' + this.ipv6Enabled);
     this.writeStatus('starting', '', 'config');
     this.startVpn().catch((e: Object) => {
       const msg: string = e instanceof Error ? e.message : '未知错误';
@@ -269,32 +274,42 @@ export default class V2RayVpnExtension extends VpnExtensionAbility {
       }
     }
 
-    // TUN 模式：VpnConfig 形态对齐澜舟真机验证版
+    // TUN 模式：VpnConfig 形态对齐澜舟真机验证版。
+    // v1.2.2：按 ipv6Enabled 分两支——开=双栈全路由（真机验证形态）；
+    // 关=仅 v4 地址/默认路由/DNS 且 isIPv6Accepted=false（此前恒双栈，
+    // 设置里的 IPv6 开关对扩展不可见、点了不起作用）。
+    const tunAddresses: vpnExtension.LinkAddress[] = [
+      { address: { address: TUN_ADDR_V4, family: 1 }, prefixLength: TUN_PREFIX_V4 },
+    ];
+    const tunRoutes: vpnExtension.RouteInfo[] = [
+      {
+        interface: 'vpn-tun',
+        destination: { address: { address: '0.0.0.0', family: 1 }, prefixLength: 0 },
+        gateway: { address: TUN_ADDR_V4, family: 1 },
+        hasGateway: false,
+        isDefaultRoute: true,
+      },
+    ];
+    let tunDns: string[] = [TUN_ADDR_V4];
+    if (this.ipv6Enabled) {
+      tunAddresses.push(
+        { address: { address: TUN_ADDR_V6, family: 2 }, prefixLength: TUN_PREFIX_V6 });
+      tunRoutes.push({
+        interface: 'vpn-tun',
+        destination: { address: { address: '::', family: 2 }, prefixLength: 0 },
+        gateway: { address: TUN_ADDR_V6, family: 2 },
+        hasGateway: false,
+        isDefaultRoute: true,
+      });
+      tunDns = [TUN_ADDR_V4, TUN_ADDR_V6];
+    }
     const vpnConfig: vpnExtension.VpnConfig = {
       mtu: MTU,
-      addresses: [
-        { address: { address: TUN_ADDR_V4, family: 1 }, prefixLength: TUN_PREFIX_V4 },
-        { address: { address: TUN_ADDR_V6, family: 2 }, prefixLength: TUN_PREFIX_V6 },
-      ],
-      routes: [
-        {
-          interface: 'vpn-tun',
-          destination: { address: { address: '0.0.0.0', family: 1 }, prefixLength: 0 },
-          gateway: { address: TUN_ADDR_V4, family: 1 },
-          hasGateway: false,
-          isDefaultRoute: true,
-        },
-        {
-          interface: 'vpn-tun',
-          destination: { address: { address: '::', family: 2 }, prefixLength: 0 },
-          gateway: { address: TUN_ADDR_V6, family: 2 },
-          hasGateway: false,
-          isDefaultRoute: true,
-        },
-      ],
-      dnsAddresses: [TUN_ADDR_V4, TUN_ADDR_V6],
+      addresses: tunAddresses,
+      routes: tunRoutes,
+      dnsAddresses: tunDns,
       isIPv4Accepted: true,
-      isIPv6Accepted: true,
+      isIPv6Accepted: this.ipv6Enabled,
       isBlocking: false,
       blockedApplications: blockedApps,
     };
@@ -349,9 +364,10 @@ export default class V2RayVpnExtension extends VpnExtensionAbility {
     }
     // hev TUN->SOCKS：失败必须诚实报错（v1.0 时返回 false 仍报 running，
     // TUN 里流量无处可去却显示已连接——v1.1.0 起直接抛错走 error 状态）。
-    // 第三个参数传 filesDir：NAPI 桥据此把 hev debug 日志落盘 hev.log。
+    // 第三个参数传 filesDir：NAPI 桥据此把 hev debug 日志落盘 hev.log；
+    // 第四个参数 ipv6Enabled（v1.2.2）：桥侧据此决定 hev yaml 是否带 ipv6 行。
     this.step('tun-start');
-    const tunOk: boolean = startTun(socksPort, MTU, this.context.filesDir);
+    const tunOk: boolean = startTun(socksPort, MTU, this.context.filesDir, this.ipv6Enabled);
     this.diag('startTun(hev) 返回 ' + tunOk);
     if (!tunOk) {
       throw new Error('TUN 转发启动失败：hev 未就绪（startTun=false），详见诊断日志');

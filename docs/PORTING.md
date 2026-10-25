@@ -122,3 +122,14 @@ v1.2.0 真机暴露两个跨进程缺陷，根因都是「Xray 实例在 VPN 扩
 | 节点测速无效 | UI 侧被本进程 `isRunning()` 恒 false 挡住永远走 TCP 握手兜底；XrayPing 临时实例缺 `XRAY_LOCATION_ASSET`、测试端口与正式端口相同 | `model/XrayConfig.buildXrayTestConfig()`（内部 `buildConfigWithPorts` 加端口覆盖：18088/18089 + 非 TUN 生成，CUSTOM 直通不变）；`testDelay` 全链路 4 参（`model/CoreBridge` → `cpp/xray_napi.cpp` argc=4 → Go `XrayPing(..., assetDir)`）；Go 桥临时实例 LoadConfig 前 Setenv + `rewriteLogConfig`、`pingMu` 整段串行、失败 `setErrText` 写明经哪个 HTTP 入站测速失败；Index 删除 TCP 兜底，`testNodeReal()` 统一入口（ensureAssets→测速配置→6000ms→失败取 lastError 记日志），行内「测速中…」+ 防重入 + 全部测速成功/失败计数；扩展节点探针同步补第 4 参 `assetDir()`（走运行实例路径） |
 
 冒烟新增 7 条断言锁定测速配置形态（88 项全过）；测速配置经官方 Xray v26.10.21 二进制 `run -test` 复验 Configuration OK。
+
+## v1.2.2 修复对照（设置有效性）
+
+v1.2.1 真机反馈「设置里很多选项点了不起作用」。审计后四处定点修复，其余设置（端口/DNS/嗅探/UDP/TUN/按应用/自动更新/自动连接）消费链路原本即通，只是被保存问题拖累：
+
+| 缺陷 | 根因 | 鸿蒙实现 |
+|---|---|---|
+| 设置页/路由页改动丢失 | 控件只改 `@State`，仅「保存」按钮/输入回车触发 `SettingsStore.save`，直接返回即丢弃 | `pages/SettingsPage`：新增 `silentSave()`（collect+save、仅更新 msg），全部 Toggle 与日志等级/按应用分段的回调在改 state 后调用；输入框保留 `onSubmit→save()` 并新增 `aboutToDisappear()` 兜底保存。`pages/RoutingPage`：抽 `persist()` 整页落盘，模式 segBtn 点击即调用，新增 `aboutToDisappear()` 兜底五个规则编辑器 |
+| 主题不变色 | `SettingsStore.applyColorMode` 只设系统 ColorMode；界面全走 `components/Ui.ets` 的 `Pal` 硬编码浅色 | `Ui.ets` 新增 `applyPalette(dark)`/`resolveDark(mode, systemDark)` 双调色板（深色 bg `#12181D`/card `#1C262E`/text `#E8F0F4`/sub `#93A7B1`/accentSoft `#1E3448`/chip `#26343E`/line `#2E414D`，语义色共用）；`EntryAbility.onCreate` 在 applyColorMode 后应用、新增 `onConfigurationUpdate` 跟随系统变化（仅 system 模式）；SettingsPage 主题按钮经 `applyTheme()` 同步 applyPalette，msg 的 @State 变化触发本页重渲染 |
+| 日志等级三档一档 | Go 桥 `rewriteLogConfig` 把 warning/error 强升 info（v1.1.2 诊断遗留） | `core/xray-bridge/main.go` 删除强升：loglevel 原样透传、缺失补 `warning`；error 落盘 `xray_error.log`、access 禁用保留；注释同步说明默认 warning 已含 error 级记录。libxray.so 已重编 |
+| IPv6 开关进不了扩展 | 仅 XrayConfig DNS queryStrategy 消费；扩展 VpnConfig/hev yaml 恒双栈 | `service/VpnService.connect(tunEnabled, ipv6Enabled)`，want 参数 `PARAM_IPV6='v2rayng_ipv6'`（`1`/`0`，disconnect 传默认 true）；`vpnextension/V2RayVpnExtension` onCreate 解析存 `ipv6Enabled` 并 diag，VpnConfig 按之分双栈/仅 v4 两支（addresses/routes/dnsAddresses/isIPv6Accepted）；`model/CoreBridge.startTun` 加第 4 参，`cpp/xray_napi.cpp` StartTun argc=4 读 bool（缺省 true），yaml 关时去掉 `ipv6:` 行 |

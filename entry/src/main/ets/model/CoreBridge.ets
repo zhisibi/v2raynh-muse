@@ -12,7 +12,7 @@ interface NativeCore {
   lastError(): string;
   queryTraffic(): string;
   testDelay(configJson: string, url: string, timeoutMs: number, assetDir: string): number;
-  startTun(socksPort: number, mtu: number, logDir: string): boolean;
+  startTun(socksPort: number, mtu: number, logDir: string, ipv6: boolean): boolean;
   stopTun(): void;
   tunStatus(): string;
 }
@@ -91,10 +91,11 @@ export function testDelay(configJson: string, url: string, timeoutMs: number, as
 }
 
 /** 启动 hev-socks5-tunnel（TUN fd -> SOCKS），符号缺失返回 false；
- *  logDir 传 filesDir，桥侧据此把 hev debug 日志落盘到 <logDir>/hev.log */
-export function startTun(socksPort: number, mtu: number, logDir: string): boolean {
+ *  logDir 传 filesDir，桥侧据此把 hev debug 日志落盘到 <logDir>/hev.log；
+ *  ipv6（v1.2.2）决定 hev yaml 是否带 ipv6 行，与 VpnConfig 栈形态保持一致 */
+export function startTun(socksPort: number, mtu: number, logDir: string, ipv6: boolean): boolean {
   try {
-    return Boolean(nativeCore.startTun(socksPort, mtu, logDir));
+    return Boolean(nativeCore.startTun(socksPort, mtu, logDir, ipv6));
   } catch (e) {
     return false;
   }

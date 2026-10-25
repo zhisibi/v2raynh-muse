@@ -181,3 +181,23 @@ v1.2.0 真机反馈：主界面、底部测试键、二维码均有效，但**�
 5. **全部测速**：菜单「全部测速」，进度文案带累计成功/失败数，结束有总数统计；中途可取消。
 6. **连接中测速**：保持连接时对列表里其它节点测速，结果正常且不影响当前连接；底部「测试」键测当前节点延迟正常。
 7. **失败回传**：若仍有个别节点测速失败，应用日志（日志页「测速」条目）与 `xray_assets/xray_error.log` 应有具体原因。
+
+## v1.2.2 修复（设置里很多选项点了不起作用）
+
+v1.2.1 真机反馈：设置里很多选项点了不起作用。全量审计结论：多数设置的消费链路本是通的（端口/DNS/嗅探/UDP/TUN/按应用在生成配置时消费，自动更新间隔由回前台 `checkDue` 消费，自动连接在启动时消费），病灶集中在四处：
+
+| 选项/范围 | 问题 | 修法 |
+|---|---|---|
+| 设置页 + 路由页几乎全部控件 | 开关（Toggle）、分段按钮、输入框只改 `@State`，落盘只发生在点右上「保存」或输入框回车时；拨完开关直接返回即全丢弃 | **即时保存**：两页所有 Toggle/分段改完 state 立刻静默保存（不弹 toast，页内 msg 提示「已保存 · 连接类设置重连后生效」）；输入框保留回车保存，另加 `aboutToDisappear()` 整页兜底保存；「保存」按钮保留。路由页模式分段即时存、五个规则编辑器离开页面兜底存 |
+| 主题（跟随系统/浅色/深色） | 只调系统 `setColorMode`，而全应用颜色是 `Ui.ets` 的 `Pal` 硬编码浅色常量，自绘界面根本不变色（半死） | **双调色板**：`Ui.ets` 新增 `applyPalette(dark)`（深色值 bg `#12181D` 等）与 `resolveDark()`；`EntryAbility.onCreate` 在 `applyColorMode` 后按 `themeMode` 应用调色板，新增 `onConfigurationUpdate` 在跟随系统时响应系统深浅变化；设置页主题按钮保存后同步调用 `applyPalette` 并以 msg 变化触发本页重渲染立即变色 |
+| 日志等级（warning/info/error） | Go 桥 `rewriteLogConfig` 把 warning/error 强升 info（v1.1.2 真机诊断遗留），三档实际一档（半死） | 删除强升逻辑：用户等级原样透传，仅缺失时补 `warning`（默认 warning 已含 error 级记录，出站/DNS 报错仍能落盘诊断）；error 落盘 `xray_error.log` 与 access 禁用保留。libxray.so 已重编 |
+| IPv6 路由开关 | 只进了 XrayConfig 的 DNS `queryStrategy`；扩展的 VpnConfig 恒双栈、hev yaml 恒带 ipv6，扩展进程根本读不到这个设置（半死） | **全链路透传**：`VpnService.connect(tunEnabled, ipv6Enabled)` 经 want 参数 `v2rayng_ipv6`（`1`/`0`）进扩展；扩展关时 VpnConfig 仅 v4 地址/默认路由/DNS、`isIPv6Accepted=false`；`startTun` 加第 4 参 `ipv6`（CoreBridge→NAPI），桥侧 yaml 关时去掉 ipv6 行 |
+
+文案：TUN/IPv6 说明末尾标注「（重连后生效）」，保存提示改为「设置已保存（连接类设置重连后生效）」。
+
+### v1.2.2 真机验证清单
+
+1. **即时保存**：设置页任意拨一个开关（如 UDP 转发）后直接返回、再进设置页，开关状态应保持；路由页改一条自定义规则不清保存直接返回，重进应还在。
+2. **主题**：设置页切「深色」，本页应立即整体变深色；回主界面也已变色；切回「浅色」恢复；「跟随系统」时改系统深浅模式，应用跟随变化。
+3. **日志等级**：设为 error 后重连，`xray_assets/xray_error.log` 不应再出现 info 级流水（仅错误）；设回 warning 为默认量级。
+4. **IPv6**：关 IPv6 后重连（TUN），系统 VPN 信息/诊断日志应显示 `ipv6=false`，仅 IPv4 上网正常；开回后双栈恢复。
